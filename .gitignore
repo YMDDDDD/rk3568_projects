@@ -1,0 +1,14 @@
+# 编译产物
+Makefile
+*.o
+moc_*
+ui_*.h
+.qmake.stash
+led
+led.pro.user
+
+# opencode 规则
+AGENTS.md
+
+# 截图等临时文件
+screenshot.png
