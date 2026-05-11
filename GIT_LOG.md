@@ -80,3 +80,27 @@ git commit -m "chore: 添加项目 git 提交规则 skill"
 # 推送到远程
 git push
 ```
+
+## 2026-05-11 第四次推送
+
+### 推送内容
+
+1. 将 `Makefile` 重新加入 `.gitignore` 忽略规则
+2. 用 `git rm --cached` 从版本库中移除 Makefile 的跟踪，保留工作区文件
+3. 修正了第二次推送时错误提交编译产物的问题
+
+### 使用的 git 命令
+
+```bash
+# 从暂存区移除 Makefile（保留工作区文件）
+git rm --cached qt_projects/01_qt_led/Makefile
+
+# 添加文件到暂存区
+git add .gitignore GIT_LOG.md
+
+# 提交
+git commit -m "fix: 将 Makefile 移出版本控制（qmake 编译产物不应提交）"
+
+# 推送到远程
+git push
+```
