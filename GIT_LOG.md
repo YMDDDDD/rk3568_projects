@@ -61,3 +61,22 @@ git commit -m "chore: 提交 Makefile 和项目截图，完善 .gitignore 忽略
 # 推送到远程
 git push
 ```
+
+## 2026-05-11 第三次推送
+
+### 推送内容
+
+1. 创建项目级 skill 文件 `.opencode/skills/git-commit-rules/SKILL.md`，规定了 git 提交 8 步流程、GIT_LOG.md 和 README.md 的用途
+
+### 使用的 git 命令
+
+```bash
+# 添加文件到暂存区
+git add .opencode/
+
+# 提交
+git commit -m "chore: 添加项目 git 提交规则 skill"
+
+# 推送到远程
+git push
+```
