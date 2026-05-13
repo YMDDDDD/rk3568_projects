@@ -1,5 +1,63 @@
 # Git 推送记录
 
+## 2026-05-13 第五次推送
+
+### 推送内容
+
+提交 `rk3568-camera/` 智能摄像头项目，包含：
+
+```
+rk3568-camera/
+├── app/                           # 应用源码 (32 文件)
+│   ├── CMakeLists.txt             # CMake 交叉编译配置
+│   ├── toolchain.cmake            # 工具链文件
+│   ├── main.cpp                   # 入口（当前为采集+显示模式）
+│   ├── mainwindow.h/cpp           # Qt 主窗口
+│   ├── capture.h/cpp              # V4L2 采集（主线程 QTimer）
+│   ├── video_widget.h/cpp         # OpenGL NV12 渲染
+│   ├── buffer_pool.h/cpp          # DMA-BUF BufferPool
+│   ├── frame_ref.h                # 统一帧描述结构
+│   ├── spsc_queue.h               # 无锁单产单消队列
+│   ├── pts_clock.h                # 统一时间戳
+│   ├── config.h                   # 编译期配置
+│   ├── mpp_encoder.h/cpp          # MPP H.264 硬编码
+│   ├── rtsp_server.h/cpp          # 自实现 RTSP/RTP 服务器
+│   ├── segment_recorder.h/cpp     # FFmpeg 分段 MP4 录制
+│   ├── detector.h/cpp             # RKNN YOLO 检测
+│   ├── watchdog.h/cpp             # 线程监控+自恢复
+│   └── perf_monitor.h/cpp         # 性能统计
+├── third_party/spdlog/            # spdlog v1.12.0 (header-only)
+├── model/                         # 模型文件（coco_labels.txt）
+├── scripts/                       # build/deploy/convert_model 脚本
+├── buildroot/configs/             # Buildroot defconfig 片段
+├── SOLUTION.md                    # 完整方案设计文档
+├── WORKLOG.md                     # 工作日志
+└── README.md                      # 项目说明
+```
+
+### 已排除
+
+- `app/build/` — CMake 编译产物
+- `tests/test_*` — 测试二进制文件
+
+### 使用的 git 命令
+
+```bash
+# 追加 .gitignore 规则
+echo "...build/..." >> .gitignore
+
+# 添加文件
+git add rk3568-camera/ .gitignore
+
+# 提交
+git commit -m "feat: RK3568 camera project - capture, display, MPP encode, RTSP push"
+
+# 推送
+git push origin main
+```
+
+---
+
 ## 2026-05-11 第一次推送
 
 ### 推送内容
