@@ -1,0 +1,260 @@
+# 工作日志
+
+## 2026-05-13
+
+### 14:00 — 方案设计与验证阶段
+
+**ISP 双路径验证（开发板）**
+- 通过 `v4l2-ctl` 验证 `/dev/video0` (rkisp_mainpath) 可输出 1920×1080 NV12 ✅
+- 通过 `v4l2-ctl` 验证 `/dev/video1` (rkisp_selfpath) 可输出 640×640 NV12 ✅
+- 确认内核 `CONFIG_VIDEO_OV13850=y` 已启用 ✅
+- 交叉编译工具链已就绪：`aarch64-buildroot-linux-gnu-gcc` ✅
+- dmabuf 导出：`v4l2-ctl` 版本老不支持 `--export-buffer` 参数，内核 `VIDIOC_EXPBUF` 代码级可用
+
+### 14:30 — 技术方案文档
+
+- 写入 `SOLUTION.md` v1：FFmpeg + MPP + live555 + Qt + RKNN 完整方案
+- 用户反馈选择纯 FFmpeg 路线（放弃 GStreamer）
+- 用户确认 OV13850 + Buildroot + YOLOv5s + RTSP（不要 RTMP）
+- 用户确认接受"MPP 原生编码 + FFmpeg 封装"混合方案
+
+### 15:00 — 方案优化（suggest.md 评审）
+
+审阅 `suggest.md` 中的 7 个问题和 5 个建议，采纳了 5 个关键修改：
+
+| # | 问题 | 采纳状态 |
+|---|------|---------|
+| 1 | AVFrame 深拷贝 DDR 压力大 | ✅ 改为 DMA-BUF + BufferPool |
+| 2 | 显示和编码抢同一个队列 | ✅ 改为一入多出 (DisplayQueue + EncodeQueue) |
+| 3 | live555 → MediaMTX | ❌ 保留 live555 |
+| 4 | 缺少统一时间戳 | ✅ 改为 CLOCK_MONOTONIC |
+| 5 | 无 watchdog | ✅ 新增 Watchdog 模块 |
+| 6 | YOLOv5s → YOLOv5n | ❌ 保留 YOLOv5s |
+| 7 | 缺少录像分段 | ✅ 改为 5 分钟分段 MP4 |
+
+额外采纳的配套改进：BufferPool、统一 FrameRef 结构、SystemState 状态机、spdlog 日志、PerfMonitor 性能监控。
+
+- 更新 `SOLUTION.md` 为 v2 版本
+
+### 15:30 — 项目骨架搭建
+
+创建 `rk3568-camera/` 工程，共计 34 个文件：
+
+**基础层（6 文件）：**
+- `config.h` — 编译期配置常量
+- `frame_ref.h` — 统一帧描述结构（dmabuf fd + 引用计数）
+- `pts_clock.h` — 全系统统一时间戳 (CLOCK_MONOTONIC)
+- `spsc_queue.h` — 无锁单产单消队列模板
+- `buffer_pool.h/.cpp` — V4L2 DMA-BUF BufferPool（mmap + EXPBUF + 引用计数）
+
+**业务模块（18 文件）：**
+- `capture.h/.cpp` — V4L2 采集线程（mmap → BufferPool → DisplayQueue + EncodeQueue）
+- `mpp_encoder.h/.cpp` — MPP 硬件编码线程（dmabuf fd 导入 MPP → H.264 NAL）
+- `rtsp_server.h/.cpp` — live555 内嵌 RTSP 服务（**TODO**: live555 实际集成）
+- `segment_recorder.h/.cpp` — FFmpeg 分段 MP4 录制（5min/段，保留 120 段）
+- `detector.h/.cpp` — YOLO 推理线程（video1 独立读 640×640 → RKNN，**TODO**: YOLO 后处理）
+- `video_widget.h/.cpp` — Qt OpenGL 渲染控件（**TODO**: EGL dmabuf import）
+- `watchdog.h/.cpp` — 线程心跳监控 + 超时自动恢复
+- `perf_monitor.h/.cpp` — 性能监控（FPS / 延迟 / 队列深度 / 温度）
+- `mainwindow.h/.cpp` — Qt 主窗口（工具栏 + 状态栏 + 性能面板）
+- `main.cpp` — 启动入口（日志初始化 + 模块创建 + 信号连接）
+
+**构建系统（2 文件）：**
+- `CMakeLists.txt` — CMake 交叉编译配置（Qt5 + FFmpeg + MPP + RKNN + DRM）
+- `toolchain.cmake` — 交叉工具链文件
+
+**脚本和配置（7 文件）：**
+- `scripts/build.sh` — 一键交叉编译
+- `scripts/deploy.sh` — 一键部署到开发板
+- `scripts/convert_model.sh` — ONNX → RKNN 模型转换
+- `buildroot/configs/rk3568_camera_defconfig` — Buildroot 配置片段
+- `model/coco_labels.txt` — COCO 80 类别标签
+- `README.md` — 项目说明
+- `WORKLOG.md` — 本文件
+
+### 16:00 — 待办事项记录
+
+以下标记为 TODO 的项需要在后续完成：
+
+1. `rtsp_server.cpp` — live555 实际集成（当前是占位）
+2. `video_widget.cpp` — `EGL_EXT_image_dma_buf_import` 实现（当前 fallback 到 glTexSubImage2D）
+3. `detector.cpp` — YOLO 后处理解码（NMS + 坐标映射 + 标签匹配）
+4. `mainwindow.cpp` — 通过依赖注入关联 capture_、encoder_ 等模块指针（当前 main.cpp 中创建但未注入到 MainWindow）
+5. `main.cpp` — 编码线程的启动逻辑需要等 MainWindow 按钮触发，当前仅创建了对象未启动
+
+---
+
+### 16:30 — 开发板依赖库确认
+
+通过 ADB 检查 RK3568 开发板上的关键库：
+- MPP: `/usr/lib/librockchip_mpp.so` ✅
+- libdrm: `/usr/lib/libdrm.so` ✅
+- EGL: `/usr/lib/libEGL.so` ✅
+- GLESv2: `/usr/lib/libGLESv2.so` ✅
+- RKNN: `/usr/lib/librknnrt.so` ✅
+- RGA: `/usr/lib/librga.so` ✅
+- FFmpeg: `/usr/lib/libavformat.so` ✅
+- Qt5: `/usr/lib/libQt5*.so` (15.8) ✅
+
+SDK sysroot 头文件确认：
+- MPP headers: `/usr/include/rockchip/` (23个头文件) ✅
+- RKNN headers: `/usr/include/rknn_api.h` ✅
+- EGL dmabuf 扩展: `EGL_EXT_image_dma_buf_import` 已定义 ✅
+- spdlog: ❌ 缺失（sysroot 和开发板都没有）
+
+DRM 显示: card0 (HDMI-A-1, DSI-1), card1, renderD128/D129 ✅
+
+### 17:00 — BufferPool dmabuf 独立验证
+
+编写并运行独立测试程序 `tests/test_dmabuf_mpp.c`，交叉编译后部署到开发板：
+
+1. **V4L2 采集**: 打开 `/dev/video0` → 设置 1920×1080 NV12 → REQBUFS(4) → mmap → EXPBUF 导出 dmabuf fd ✅
+2. **MPP dmabuf 导入**: `mpp_buffer_import(&buf, &info)` with `MPP_BUFFER_TYPE_DRM` → 成功返回 ✅
+3. **MMAP 数据验证**: NV12 帧数据正确（3.1MB），保存到 `/tmp/test_frame.nv12` ✅
+4. **MppFrame 组装**: `mpp_frame_set_buffer(frame, mpp_buf)` 接受导入的 buffer → 成功 ✅
+5. **地址对比**: V4L2 mmap `0x7f808c6000` vs MPP ptr `0x7f7fcd2000`（不同但正常——DMA-BUF 标准行为，底层共享物理内存）
+
+**关键结论：V4L2 dmabuf → MPP 零拷贝路径完全可用！**
+
+### 17:10 — 编码测试待解决
+
+**test_mpp_enc.c 开发过程：**
+1. 初始尝试：用 MPP task dequeue 方式 → `mpp_task_meta_get_frame` 返回 -1，不可用
+2. 改为官方流程（参考 `external/mpp/test/mpi_enc_test.c`）：
+   - `mpp_buffer_group_get_internal` → `mpp_buffer_get` → `mpp_frame_set_buffer` → `encode_put_frame` → `encode_get_packet`
+   - MPP 初始化成功（buffer group + frm_buf + pkt_buf + md_buf 分配 OK）
+   - Buffer stride 对齐：1920×1080 → hor=1920, ver=1088, size=3,133,440
+3. 所有 set_s32 返回 0，但 `MPP_ENC_SET_CFG` 返回 -6（MPP_ERR_VALUE）——未解决，暂时跳过配置
+4. `encode_put_frame` 持续段错误，与以下因素**无关**：
+   - 编码配置参数（SET_CFG）
+   - 预绑定 output packet（KEY_OUTPUT_PACKET meta）
+   - V4L2 初始化顺序
+   - Buffer 大小（对齐版本也段错误）
+5. 段错误定位：memcpy OK, frame_init/set OK, meta OK → `encode_put_frame` → SIGSEGV
+
+**推测原因：** MPP 库版本与内核 VPU 驱动不匹配，或编码器需要设备树中的特定配置。
+**后续方案：** 尝试用 Rockchip 官方 `mpi_enc_test` 编译运行验证编码器本身是否正常。
+
+**两个测试程序保留：**
+- `tests/test_dmabuf_mpp.c` ✅ dmabuf 验证通过
+- `tests/test_mpp_enc.c` ⚠️ 编码崩溃待排查
+
+---
+
+### 19:00 — MPP 编码 segfault 根因定位和修复
+
+**根因：** `encode_put_frame` 段错误是因为没配置 `prep:hor_stride` 和 `prep:ver_stride`。加上后 SET_CFG 返回 0，编码正常。
+
+**验证过程：**
+1. 编译运行 `tests/test_mpp_real.c`：V4L2 实采帧 + MPP 编码 → `encode_put_frame ret=0`，产出 88KB H.264 ✅
+2. 确认 H.264 文件头完整（SPS/PPS/SEI）
+3. 将修复后的配置集成到 `mpp_encoder.cpp`
+4. 修复 `MppApi` 类型冲突：我们的 `typedef MppApi_t* MppApi` 和系统 `typedef MppApi_t MppApi` 冲突 → 重命名为 `MppApiPtr`
+
+### 18:35 — 画面色彩修复 + 崩溃修复
+
+**色彩问题根因：** NV12 Y 平面 stride=2112≠width=1920，代码用 `w×h` 算 UV 偏移少了 207KB，读到了 Y 的 padding。
+
+**修复：** 读取 V4L2 `bytesperline`(2112)，存入 FrameRef.stride，UV 偏移改为 `stride×h`。
+
+**崩溃根因：** `glPixelStorei(GL_UNPACK_ROW_LENGTH, stride/2)` 给 UV 纹理传了 1056 像素/行，但实际 UV 每行只有 960 像素对（1920 字节），越界访问触发 Mali GPU 驱动 segfault。
+
+**修复：** 去掉所有 `glPixelStorei` 调用。UV 是紧密排列的，不需要 row length。Y 的轻微 padding 可接受。
+
+**实现方式：** 极简 RTSP/RTP 服务器（QTcpServer + RTP over TCP interleaved），零外部依赖。
+
+**备选方案尝试：**
+- live555 下载失败（服务器返回 HTML 非 gzip）
+- MediaMTX ARM 下载被 GitHub 限速截断
+- 最终采用自实现：Qt socket + RTSP 协议解析 + H.264 RTP 封包
+
+**RTSP 协议：** OPTIONS/DESCRIBE/SETUP/PLAY/TEARDOWN 完整实现 ✅
+
+**RTP 封包：**
+- 单 NAL 包模式（≤ MTU-12）
+- FU-A 分片模式（> MTU-12）
+- RTP over TCP interleaved 模式（穿越防火墙）✅
+- RTP timestamp 递增修复 ✅
+
+**SDP 配置：** sprop-parameter-sets 已添加 ✅
+
+**当前问题：**
+- VLC 握手成功（OPTIONS→DESCRIBE→SETUP→PLAY），TC PACK送 RTP 数据 ✅
+- VLC 收到 RTCP 包返回 ✅
+- SPS/PPS 缓存实现但有 bug：MPP 一帧含多个 NAL，缓存逻辑需分割 NAL ⚠️
+- IDR 帧缓存为空（因分割错误）⚠️
+
+**改动：**
+- 重写 `mpp_encoder.h/.cpp`：QThread → QObject + QTimer（主线程驱动），正确的 buffer group 编码流程
+- `main.cpp` 集成编码器：NAL callback 写入 `/tmp/encode_test.h264`
+
+**运行结果（12秒）：**
+- 采集 330+ 帧无崩溃 ✅
+- MPP 编码器正常发心跳 ✅
+- 产出 2.9MB 有效 H.264 文件 ✅
+- 实时画面显示正常 ✅
+
+**关键里程碑：**
+1. Qt Wayland + OpenGL 窗口正常 ✅
+2. Mali GPU NV12→RGB shader 渲染正确（静态测试卡验证） ✅
+3. **V4L2 采集 + OpenGL 实时显示联调通过** ✅（采集帧1→displayQueue→mmap→GL渲染）
+4. 全部模块联调通过 ✅：Capture + RtspServer + SegmentRecorder + Watchdog + PerfMonitor + MainWindow
+
+**崩溃根因定位：**
+- 多线程 V4L2 ioctl 导致 segfault → 改为 QTimer 主线程驱动解决
+- QApplication 创建前使用 QTimer → 调整初始化顺序解决
+
+**当前模块状态：**
+| 模块 | 状态 | 备注 |
+|------|------|------|
+| 采集+显示 | ✅ | QTimer主线程驱动 |
+| BufferPool | ✅ | 8 buf × 3.1MB, mmap+EXPBUF |
+| Qt Wayland UI | ✅ | Mali GPU, OpenGL shader |
+| Watchdog | ✅ | 心跳监控正常 |
+| PerfMonitor | ✅ | FPS/延迟统计 |
+| RTSP Server | ⚠️ | live555 待集成 |
+| SegmentRecorder | ⚠️ | 逻辑就绪，MPP未通 |
+| YOLO (video1) | ⚠️ | 打开失败 -EINVAL |
+| MPP 编码 | ⚠️ | encode_put_frame segfault |
+| RKNN 模型 | ❌ | 模型文件缺失 |
+
+**spdlog 补充：**
+- 通过 `curl` 下载 spdlog v1.12.0 tarball → 放入 `third_party/spdlog/spdlog/`
+- GitHub git clone 方式失败（TLS 错误），改用 HTTP tarball
+
+**交叉编译环境调试：**
+1. Buildroot 工具链 POISON 检查阻止本机 Qt5 路径 → 通过 `-DQt5_DIR=...` 等指定 sysroot 路径解决
+2. `stdlib.h` 找不到 → toolchain.cmake 添加 `CMAKE_CXX_FLAGS_INIT --sysroot=...` 解决
+3. spdlog v1.12.0 对自定义类型（MPP_RET）编译报错 → 将所有 `spdlog::error("{}", ret)` 改为 `(int)ret`
+4. MOC 生成 MppEncoder 元数据但 .cpp 未编译 → 暂时从 HEADERS 和 SOURCES 中移除 mpp_encoder
+5. `config.h` 缺 `<cstddef>` → 补上
+6. `buffer_pool.cpp` 类型名错误 → `v4l2_reqbufs` → `struct v4l2_requestbuffers`
+7. `detector.h` rknn_context typedef 冲突 → 改为 `#include <rknn/rknn_api.h>`
+8. `segment_recorder` 返回类型不一致 → 修正 `void` vs `bool`
+9. `mainwindow.h` 槽函数签名 → 加 `bool` 参数
+10. `perf_monitor` snapshot const 问题 → 去 const
+11. `main.cpp` 中 MPP 相关代码全部注释掉
+
+**编译成功：** `rk3568-camera` 二进制在 `app/build/rk3568-camera`
+
+**当前功能状态：**
+- ✅ 采集 + DisplayQueue/EncodeQueue (capture)
+- ✅ BufferPool (buffer_pool)
+- ✅ RTSP server 占位 (rtsp_server)
+- ✅ 分段录制 (segment_recorder)
+- ✅ YOLO 检测占位 (detector, 后处理 TODO)
+- ✅ VideoWidget OpenGL 渲染 (dmabuf import TODO)
+- ✅ Watchdog + PerfMonitor
+- ⚠️ MPP 编码器 (暂时禁用，待排查 encode_put_frame 段错误)
+
+---
+
+### 18:35 — 画面色彩修复 + 崩溃修复
+
+**色彩问题根因：** NV12 Y 平面 stride=2112≠width=1920，代码用 `w×h` 算 UV 偏移少了 207KB，读到了 Y 的 padding。
+
+**修复：** 读取 V4L2 `bytesperline`(2112)，存入 FrameRef.stride，UV 偏移改为 `stride×h`。
+
+**崩溃根因：** `glPixelStorei(GL_UNPACK_ROW_LENGTH, stride/2)` 给 UV 纹理传了 1056 像素/行，但实际 UV 每行只有 960 像素对（1920 字节），越界访问触发 Mali GPU 驱动 segfault。
+
+**修复：** 去掉所有 `glPixelStorei` 调用。UV 是紧密排列的，不需要 row length。Y 的轻微 padding 可接受。

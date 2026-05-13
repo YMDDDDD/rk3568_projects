@@ -17,3 +17,7 @@ qt_projects/untitled/
 
 # 旧项目目录
 #01_qt_test/
+# rk3568-camera 编译产物
+rk3568-camera/app/build/
+rk3568-camera/tests/test_*
+

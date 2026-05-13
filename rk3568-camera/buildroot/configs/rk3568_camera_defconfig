@@ -1,0 +1,42 @@
+# ============================================================================
+# Buildroot 配置片段 —— 追加到现有 defconfig
+# 用法: cat this_file >> buildroot/configs/existing_defconfig
+# ============================================================================
+
+# --- FFmpeg（MP4 分段封装） ---
+BR2_PACKAGE_FFMPEG=y
+BR2_PACKAGE_FFMPEG_AVFORMAT=y
+BR2_PACKAGE_FFMPEG_AVCODEC=y
+BR2_PACKAGE_FFMPEG_AVUTIL=y
+BR2_PACKAGE_FFMPEG_SWSCALE=y
+
+# --- MPP 硬编码 ---
+BR2_PACKAGE_ROCKCHIP_MPP=y
+
+# --- RGA 2D 加速 ---
+BR2_PACKAGE_ROCKCHIP_RGA=y
+
+# --- NPU 运行时 ---
+BR2_PACKAGE_RKNN=y
+
+# --- Qt5 ---
+BR2_PACKAGE_QT5=y
+BR2_PACKAGE_QT5BASE=y
+BR2_PACKAGE_QT5BASE_WIDGETS=y
+BR2_PACKAGE_QT5BASE_OPENGL=y
+BR2_PACKAGE_QT5BASE_OPENGL_LIB=y
+BR2_PACKAGE_QT5BASE_EGLFS=y
+
+# --- libdrm（dmabuf 支持） ---
+BR2_PACKAGE_LIBDRM=y
+
+# --- spdlog（日志） ---
+BR2_PACKAGE_SPDLOG=y
+
+# --- 内核配置（如使用自定义内核） ---
+# CONFIG_VIDEO_OV13850=y  已在当前内核启用
+
+# --- live555（需自定义包或手动编译） ---
+# 手动编译方式：
+#   wget http://www.live555.com/liveMedia/public/live555-latest.tar.gz
+#   交叉编译后拷贝到 ${SYSROOT}/usr/lib/
