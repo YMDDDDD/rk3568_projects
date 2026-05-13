@@ -33,6 +33,7 @@ public:
 signals:
     void error(const QString &msg);
     void heartbeat();
+    void frameReady();
 
 private:
     void tick();  // QTimer 回调

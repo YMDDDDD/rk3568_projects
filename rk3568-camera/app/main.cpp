@@ -4,6 +4,7 @@
 #include "config.h"
 #include <QApplication>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
@@ -12,7 +13,7 @@ int main(int argc, char *argv[]) {
     auto logger = spdlog::stdout_color_mt("camera");
     spdlog::set_default_logger(logger);
     spdlog::set_level(spdlog::level::info);
-    spdlog::info("=== Capture + Display ===");
+    spdlog::info("=== Perf Test ===");
 
     MainWindow window;
 
@@ -23,37 +24,37 @@ int main(int argc, char *argv[]) {
     }
     capture.start();
 
-    std::vector<uint8_t> compactBuf;
+    // 10ms 快速 displayTimer + 批量取帧
+    int renderCount = 0, emptyCount = 0;
+    double totalRenderMs = 0;
+    QElapsedTimer perft;
+    perft.start();
 
     QTimer displayTimer;
     QObject::connect(&displayTimer, &QTimer::timeout, [&]() {
-        auto ref = capture.displayQueue().tryPop();
-        if (!ref || !ref->mmapAddr) return;
+        // 批量取帧直到队列空
+        for (int i = 0; i < 4; i++) {
+            auto ref = capture.displayQueue().tryPop();
+            if (!ref || !ref->mmapAddr) { emptyCount++; break; }
 
-        int w = ref->width, h = ref->height, s = ref->stride > 0 ? (int)ref->stride : w;
-        int total = w * h * 3 / 2;
-        if ((int)compactBuf.size() < total) compactBuf.resize(total);
-
-        uint8_t *dst = compactBuf.data();
-        const uint8_t *src = (const uint8_t*)ref->mmapAddr;
-
-        // Y: 逐行拷贝去 padding
-        for (int row = 0; row < h; row++) {
-            memcpy(dst, src, w);
-            dst += w;
-            src += s;
-        }
-        // UV: 也逐行拷贝（UV 行 stride = Y 的 stride，每行 w 字节有效数据）
-        const uint8_t *uvSrc = (const uint8_t*)ref->mmapAddr + s * h;
-        for (int row = 0; row < h / 2; row++) {
-            memcpy(dst, uvSrc, w);
-            dst += w;
-            uvSrc += s;
+            QElapsedTimer rt; rt.start();
+            window.videoWidget()->renderRawNV12(
+                static_cast<const uint8_t*>(ref->mmapAddr),
+                ref->width, ref->height, ref->stride);
+            capture.pool().release(ref);  // 归还 V4L2 buffer
+            totalRenderMs += rt.elapsed();
+            renderCount++;
         }
 
-        window.videoWidget()->renderRawNV12(compactBuf.data(), w, h);
+        if (perft.elapsed() >= 2000) {
+            double avgMs = renderCount > 0 ? totalRenderMs / renderCount : 0;
+            spdlog::info("Perf: {} renders in 2s, {} empty polls, avg render {:.1f}ms",
+                         renderCount, emptyCount, avgMs);
+            renderCount = 0; emptyCount = 0; totalRenderMs = 0;
+            perft.restart();
+        }
     });
-    displayTimer.start(33);
+    displayTimer.start(10);  // 10ms 快速轮询
 
     spdlog::info("Showing window...");
     window.show();

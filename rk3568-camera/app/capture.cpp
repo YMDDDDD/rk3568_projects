@@ -105,7 +105,8 @@ void CaptureThread::tick() {
 
         ref->pts = PtsClock::nowUs();
         displayQueue_.tryPush(ref);
-        encodeQueue_.push(ref);
+        // encodeQueue_.push(ref);  // FIXME: 编码器启用后恢复
+        emit frameReady();
     }
 
     emit heartbeat();

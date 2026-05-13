@@ -258,3 +258,65 @@ DRM 显示: card0 (HDMI-A-1, DSI-1), card1, renderD128/D129 ✅
 **崩溃根因：** `glPixelStorei(GL_UNPACK_ROW_LENGTH, stride/2)` 给 UV 纹理传了 1056 像素/行，但实际 UV 每行只有 960 像素对（1920 字节），越界访问触发 Mali GPU 驱动 segfault。
 
 **修复：** 去掉所有 `glPixelStorei` 调用。UV 是紧密排列的，不需要 row length。Y 的轻微 padding 可接受。
+
+---
+
+### 21:30 — 画面色彩问题排查与修复
+
+**现象：** 采集到的 NV12 数据显示在屏幕上色彩错误（偏色）。
+
+**数据链路：**
+```
+传感器 → ISP → /dev/video0 (mainpath, MPLANE模式)
+  → V4L2 mmap buffer (3342336 bytes)
+    ├─ Y  平面: offset 0,       stride=2112字节/行, 有效1920像素, 后192字节零填充
+    └─ UV 平面: offset 2280960, stride=1920字节/行 (紧密排列, 无padding)
+```
+
+**根因：** 代码中 UV 偏移用 `data + width * height` (1920×1080=2073600)，但实际 UV 平面起始偏移是 `stride * height` (2112×1080=2280960)。差了 207360 字节，UV 数据读到了 Y 平面的 stride padding 区域（全零），导致色彩完全错误。
+
+**定位方法：**
+1. 在 `capture.cpp` 的 `configureFormat` 中通过 `VIDIOC_S_FMT` 后读取 `plane_fmt[0].bytesperline` = 2112（存入 `configStride_`）
+2. 在采集第一帧时 dump 整个 mmap buffer (3342336 bytes) 到 `/tmp/frame_dump.nv12`
+3. 用 Python 分析原始数据：检查 offset `w*h`(2073600) 处是全零（Y 的 padding），offset `stride*h`(2280960) 处是非零交替数据（UV 值），确认 UV 在 `stride*h` 处、紧密排列无 padding
+
+**修复：** `renderRawNV12(const uint8_t *data, int w, int h, int stride)` — UV 偏移改为 `data + stride * h`。
+
+---
+
+### 21:40 — 画面卡住不流畅排查与修复
+
+**现象：** 应用启动后只渲染几帧，然后画面完全卡住不动。
+
+**性能数据定位：**
+在 displayTimer 回调中加入 `QElapsedTimer` 每 2 秒统计：
+```
+前2秒: 5 renders, 177 empty polls, avg 5ms
+后4秒: 0 renders, 201 empty polls — 采集完全停止！
+```
+
+**根因：** V4L2 buffer 泄漏。采集 tick 每次 `DQBUF` 获取 buffer，通过 `displayQueue` 传给显示线程，但显示回调消费后**未归还 V4L2 buffer**（没调 `VIDIOC_QBUF`）。8 个 buffer 全部被占满后，`DQBUF` 返回 `EAGAIN` 永久阻塞，采集停止。
+
+**定位方法：**
+1. 在 display 回调中加 `QElapsedTimer` 测量每次渲染耗时（发现仅 5ms，不是性能问题）
+2. 加渲染计数和空轮询计数，发现 2 秒后渲染归零，采集完全停止
+3. 检查 `BufferPool::release(ref)` 的调用链——`FrameRef` 只是 shared_ptr，析构不归还 buffer。需要在显式调用 `capture.pool().release(ref)` 才能 `VIDIOC_QBUF`
+
+**修复：** 在 display 回调渲染后加 `capture.pool().release(ref)` 归还 buffer。
+
+**验证结果：** 每 2 秒约 60 帧（30fps），平均渲染 5ms/帧，持续稳定。
+
+---
+
+### 最终采集+显示参数
+
+| 参数 | 值 |
+|------|-----|
+| 格式 | NV12 (MPLANE, num_planes=1) |
+| 分辨率 | 1920×1080 |
+| Y stride | 2112 字节/行 (192 字节零填充) |
+| UV 布局 | 紧密排列，offset=2280960 |
+| 帧率 | 30fps (每2秒60帧) |
+| 渲染耗时 | ~5ms/帧 |
+| V4L2 buffers | 8 个, 每个 3342336 字节 |
+| 显示 QTimer | 10ms 快速轮询, 批量取帧 |

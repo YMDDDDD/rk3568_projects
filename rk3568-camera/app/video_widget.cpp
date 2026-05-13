@@ -93,8 +93,8 @@ void VideoWidget::renderFrame(FrameRefPtr ref) {
     renderRawNV12(nullptr, ref->width, ref->height);
 }
 
-void VideoWidget::renderRawNV12(const uint8_t *data, int w, int h, int) {
-    if (w <= 0 || h <= 0) return;
+void VideoWidget::renderRawNV12(const uint8_t *data, int w, int h, int stride) {
+    if (w <= 0 || h <= 0 || !data) return;
 
     frameW_   = w;
     frameH_   = h;
@@ -109,7 +109,8 @@ void VideoWidget::renderRawNV12(const uint8_t *data, int w, int h, int) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    const uint8_t *uv = data + (w * h);
+    // UV 正确偏移: stride × h（非 w × h！）
+    const uint8_t *uv = data + (stride * h);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, texUV_);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RG, w / 2, h / 2,
