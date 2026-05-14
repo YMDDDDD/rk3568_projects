@@ -115,7 +115,7 @@ void RtspServer::handleRequest(QTcpSocket *sock) {
                 .arg(cseq).arg(url).arg(sdpBa.size()).toUtf8() + sdpBa;
 
         } else if (method == "SETUP") {
-            // 默认 TCP interleaved 模式（穿越防火墙）
+            // TCP interleaved 模式（VLC 首选）
             rtp_.rtspSock = sock;
             rtp_.tcpMode  = true;
             rtp_.seqNum = rtp_.timestamp = 0;
@@ -124,7 +124,7 @@ void RtspServer::handleRequest(QTcpSocket *sock) {
             resp = QString("RTSP/1.0 200 OK\r\nCSeq: %1\r\nTransport: "
                 "RTP/AVP/TCP;unicast;interleaved=0-1\r\n"
                 "Session: 00000001\r\n\r\n").arg(cseq).toUtf8();
-            spdlog::info("RTSP SETUP TCP interleaved mode");
+            spdlog::info("RTSP SETUP TCP interleaved");
 
         } else if (method == "PLAY") {
             resp = QString("RTSP/1.0 200 OK\r\nCSeq: %1\r\nSession: 00000001\r\n"
@@ -280,6 +280,11 @@ void RtspServer::rtpSendFuA(const uint8_t *nalData, size_t nalLen) {
         offset += chunk;
         rtp_.seqNum++;
     }
+}
+
+void RtspServer::sendUdp(const QByteArray &rtpData) {
+    if (rtp_.rtpSock)
+        rtp_.rtpSock->writeDatagram(rtpData, rtp_.clientAddr, rtp_.clientRtpPort);
 }
 
 void RtspServer::sendInterleaved(uint8_t channel, const QByteArray &rtpData) {

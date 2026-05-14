@@ -14,8 +14,12 @@
 // ============================================================================
 
 struct RtpSession {
-    QTcpSocket   *rtspSock = nullptr;   // 用于 TCP interleaved
     bool          tcpMode  = false;
+    QTcpSocket   *rtspSock = nullptr;   // TCP interleaved 模式
+    QUdpSocket   *rtpSock  = nullptr;   // UDP 模式
+    QHostAddress  clientAddr;
+    uint16_t      clientRtpPort  = 0;
+    uint16_t      clientRtcpPort = 0;
     uint16_t      seqNum   = 0;
     uint32_t      ssrc     = 0;
     uint32_t      timestamp = 0;
@@ -47,6 +51,7 @@ private slots:
 private:
     void handleRequest(QTcpSocket *sock);
     void sendInterleaved(uint8_t channel, const QByteArray &rtpData);
+    void sendUdp(const QByteArray &rtpData);
     void sendRtpPacket(const uint8_t *nalData, size_t nalLen);
     void sendRawNal(const uint8_t *data, size_t len);
     void cacheNalu(const uint8_t *data, size_t len);
