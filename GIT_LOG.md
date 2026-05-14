@@ -216,3 +216,20 @@ git add rk3568-camera/
 git commit -m "fix: MPP编码器SET_CFG修复——补齐prep:hor_stride/ver_stride参数"
 git push
 ```
+
+## 2026-05-14 第十次推送
+
+### 推送内容
+
+1. **video1 双路采集修复** — detector 改用原生 V4L2 API，video0/video1 可同时工作
+2. **分段录像** — SegmentRecorder 存 .h264 裸流，5分钟一段，路径 `/userdata/records/`
+3. **界面录像控制** — 按钮+文件列表+回放面板
+4. **WiFi 自动重连** — 守护进程 + 开机自启脚本
+
+### 使用的 git 命令
+
+```bash
+git add rk3568-camera/
+git commit -m "fix: video1双路采集修复 + 分段录像 + 界面录像回放列表"
+git push
+```
