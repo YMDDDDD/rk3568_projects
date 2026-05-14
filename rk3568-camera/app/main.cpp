@@ -34,14 +34,21 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // --- MPP 编码器（先跳过，单独调试后再集成） ---
-    // MppEncoder encoder; bool encOk = encoder.init(MAIN_WIDTH, MAIN_HEIGHT, capture.stride());
-    spdlog::info("Encoder: disabled for debug");
+    // --- MPP 编码器 ---
+    MppEncoder encoder;
+    bool encOk = encoder.init(MAIN_WIDTH, MAIN_HEIGHT, capture.stride());
+    spdlog::info("MPP encoder init: {}", encOk ? "OK" : "FAIL");
 
-    // --- RTSP（先跳过，编码器稳定后再集成） ---
-    // RtspServer rtsp; rtsp.start(RTSP_PORT, RTSP_MOUNT);
-    // FILE *encFile = fopen("/tmp/encode.h264", "wb");
-    // encoder.setNalCallback([&](const uint8_t *data, size_t len, uint64_t) { if (encFile) fwrite(data, 1, len, encFile); rtsp.feedNALU(data, len, 0); });
+    // --- RTSP ---
+    RtspServer rtsp;
+    rtsp.start(RTSP_PORT, RTSP_MOUNT);
+
+    // 编码 NAL → 文件 + RTSP
+    FILE *encFile = fopen("/tmp/encode.h264", "wb");
+    encoder.setNalCallback([&](const uint8_t *data, size_t len, uint64_t /*pts*/) {
+        if (encFile) fwrite(data, 1, len, encFile);
+        rtsp.feedNALU(data, len, 0);
+    });
 
     // --- 监控 ---
     PerfMonitor perf;
@@ -73,7 +80,7 @@ int main(int argc, char *argv[]) {
     perfTimer.start(10000);
 
     // --- 启动 ---
-    // if (encOk) encoder.start(capture.encodeQueue(), capture.pool());
+    if (encOk) encoder.start(capture.encodeQueue(), capture.pool());
     capture.start();
     spdlog::info("All started. RTSP: rtsp://<IP>:{}{}", RTSP_PORT, RTSP_MOUNT);
     window.show();
@@ -82,6 +89,9 @@ int main(int argc, char *argv[]) {
 
     // --- 清理 ---
     capture.stop();
+    encoder.stop();
+    rtsp.stop();
+    if (encFile) fclose(encFile);
     avformat_network_deinit();
     return ret;
 }

@@ -31,20 +31,29 @@ bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride) {
 
     MppEncCfg cfg = nullptr;
     ret = mpp_enc_cfg_init(&cfg);
-    spdlog::info("cfg_init ret={} cfg={}", (int)ret, (void*)cfg);
+    spdlog::info("cfg_init ret={}", (int)ret);
     if (ret) { spdlog::error("cfg_init: {}", (int)ret); return false; }
 
+    // 和 test_mpp_real.c 完全相同的配置
     mpp_enc_cfg_set_s32(cfg, "prep:width",       (int32_t)width);
     mpp_enc_cfg_set_s32(cfg, "prep:height",      (int32_t)height);
+    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride",  (int32_t)width);
+    mpp_enc_cfg_set_s32(cfg, "prep:ver_stride",  (int32_t)height);
     mpp_enc_cfg_set_s32(cfg, "prep:format",      MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(cfg, "rc:mode",          MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(cfg, "rc:bps_target",    4 * 1024 * 1024);
-    // rc:gop 可能不支持
+    mpp_enc_cfg_set_s32(cfg, "rc:gop",           60);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num",    30);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denorm",  1);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num",   30);
+    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denorm", 1);
 
     ret = mppApi_->control(mppCtx_, MPP_ENC_SET_CFG, cfg);
     mpp_enc_cfg_deinit(cfg);
-    spdlog::info("SET_CFG ret={}, continuing anyway", (int)ret);
-    // 允许 SET_CFG 失败——MPP 使用默认参数
+    spdlog::info("SET_CFG ret={}", (int)ret);
+    if (ret != MPP_OK) {
+        spdlog::error("SET_CFG failed, encode may use defaults");
+    }
 
     // 预分配编码 buffer
     int frameSize = (int32_t)(width * height * 3 / 2);  // 紧凑排列
@@ -109,7 +118,7 @@ bool MppEncoder::encodeOneFrame(FrameRefPtr ref) {
     if (!ref || !ref->mmapAddr) return false;
 
     int w = (int)ref->width, h = (int)ref->height;
-    int frameSize = w * h * 3 / 2;  // 和 test_mpp_real.c 一样
+    int frameSize = w * h * 3 / 2;  // 紧密排列，无 padding
 
     void *dst = mpp_buffer_get_ptr(frmBuf_);
     if (!dst) return false;

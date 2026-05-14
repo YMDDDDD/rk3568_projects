@@ -399,3 +399,13 @@ fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;  // 让驱动自己算
 Format set: 1920x1080 stride=1920 NV12 @ 30fps ✅
 Capture: frame 1 idx=0 ✅
 ```
+
+### 12:58 — GitHub 推送
+
+第七次推送：stride=2112 根因修复 + V4L2 测试工具
+- capture.cpp: G_FMT 后显式清零 bytesperline，stride 从 2112 恢复 1920
+- buffer_pool.cpp: release 改为 ref==0 精确判断
+- 新增 tests/test_v4l2_info.c、test_v4l2_8001280.c
+- GIT_LOG.md 同步更新
+
+当前状态: 采集+显示正常（stride=1920 紧密排列），MPP 编码器待重新集成
