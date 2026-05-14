@@ -453,3 +453,74 @@ SET_CFG 返回 0。
 ### 16:21 — GitHub 第九次推送
 
 RTSP TCP/UDP 模式测试 + 延时分析记录。
+
+---
+
+### 5月14日 — video1 打开失败排查与修复
+
+#### 现象
+
+`detector.open("/dev/video1", 640, 640)` 返回 -EINVAL，无法打开。日志：
+```
+Cannot open V4L2 device /dev/video1: -22
+```
+
+#### 排查过程
+
+**第一步：确认 video1 设备本身可用**
+
+`v4l2-ctl -d /dev/video1 --list-formats-ext` → 正常，支持 NV12，尺寸 32×32 ~ 1920×1568。
+
+**第二步：单独测试 video1 采集**
+
+`v4l2-ctl -d /dev/video1 --set-fmt-video=640x640,NV12 --stream-mmap --stream-count=3` → 成功！video1 独立使用正常。
+
+**第三步：测试双路同时采集**
+
+写 `test_video0_video1.c`，在同一进程中用原生 V4L2 API 同时打开 video0 和 video1：
+```
+/dev/video0: 1920x1080 bpl=1920 ✅
+/dev/video1: 640x640 bpl=640   ✅
+结果: video0=4帧, video1=4帧     ✅
+```
+
+双路同时采集成功。
+
+**第四步：定位根因**
+
+对比 `detector.cpp` 的打开方式和测试程序：
+- 测试程序：原生 V4L2 API（`open → S_FMT → REQBUFS → QUERYBUF → STREAMON`）
+- detector.cpp：FFmpeg `avformat_open_input` → 用 `AInputFormat("v4l2")` 打开
+
+**根因：FFmpeg 的 V4L2 封装不支持同一进程中 video0 和 video1 共享 ISP。** FFmpeg 的 v4l2 demuxer 在 `avformat_open_input` 时会做额外的设备查询和配置，与 video0 的主采集冲突（ISP 虚拟设备 rkisp-vir0 被两个 FFmpeg 实例竞争）。
+
+#### 修复方案
+
+将 detector.cpp 的 V4L2 打开方式从 FFmpeg 改为原生 V4L2 API，和 capture.cpp 保持一致：
+
+| 改动项 | 旧（FFmpeg） | 新（原生 V4L2） |
+|--------|-------------|----------------|
+| 打开设备 | `avformat_open_input` | `open(O_RDWR)` |
+| 设置格式 | `av_dict_set("video_size",...)` | `VIDIOC_S_FMT` |
+| 分配 buffer | FFmpeg 内部 | `VIDIOC_REQBUFS + mmap` |
+| 采集帧 | `av_read_frame` | `VIDIOC_DQBUF` |
+| 归还帧 | FFmpeg 内部 | `VIDIOC_QBUF` |
+| 依赖 | libavformat, libavcodec | 无（纯 V4L2 ioctl） |
+
+**修改文件：**
+- `detector.h`：去掉 `AVFormatContext *fmtCtx_`，改为 `int v4l2Fd_` + `mmapAddrs_[4]`
+- `detector.cpp`：重写 `open()` 和 `run()`，使用原生 V4L2 API
+
+#### 修复后验证
+
+```
+Detector: /dev/video1 640x640 bpl=640
+Detector: V4L2 ready
+YOLO detector started
+```
+
+video0 和 video1 在同一进程中同时采集，互不冲突。
+
+#### 后续：YOLO 模型准备
+
+采集通道已就绪，缺模型文件（`yolov5s.rknn`）和输出解码（`postProcess` 中的 NMS + 坐标映射）。准备流程见 SOLUTION.md 第九节。

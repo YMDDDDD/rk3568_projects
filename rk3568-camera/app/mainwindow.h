@@ -3,6 +3,7 @@
 #include "detector.h"
 #include <QMainWindow>
 #include <QLabel>
+#include <QListWidget>
 #include <QToolBar>
 #include <QAction>
 #include <QTimer>
@@ -29,6 +30,7 @@ public:
     void setModules(CaptureThread *capture, RtspServer *rtsp,
                     SegmentRecorder *recorder, DetectThread *detector,
                     Watchdog *watchdog, PerfMonitor *perf);
+    void setCaptureRunning(bool on);  // 同步采集状态到UI
 
 public slots:
     void onDetection(QVector<Detection> results);
@@ -44,6 +46,7 @@ private:
     void setupUI();
     void updateStatusBar();
     void updatePerfLabels(PerfStats stats);
+    void refreshRecordings();   // 刷新录像文件列表
 
     // 控件
     VideoWidget *videoWidget_ = nullptr;
@@ -54,6 +57,7 @@ private:
     QLabel *latencyLabel_  = nullptr;
     QLabel *rtspLabel_     = nullptr;
     QLabel *recordLabel_   = nullptr;
+    QListWidget *recList_  = nullptr;   // 录像文件列表
 
     QToolBar *toolbar_     = nullptr;
     QAction  *actCapture_  = nullptr;

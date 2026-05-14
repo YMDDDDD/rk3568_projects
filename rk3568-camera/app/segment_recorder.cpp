@@ -2,17 +2,11 @@
 #include <spdlog/spdlog.h>
 #include <QDateTime>
 #include <QDir>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-}
+#include <QFileInfo>
 
 SegmentRecorder::SegmentRecorder(QObject *parent) : QObject(parent) {}
 
-SegmentRecorder::~SegmentRecorder() {
-    stop();
-}
+SegmentRecorder::~SegmentRecorder() { stop(); }
 
 bool SegmentRecorder::start(const char *basePath, int segmentSec) {
     if (recording_) return true;
@@ -27,27 +21,27 @@ bool SegmentRecorder::start(const char *basePath, int segmentSec) {
 
     recording_ = true;
     segmentStartUs_ = PtsClock::nowUs();
-    spdlog::info("SegmentRecorder started: {}s/segment, path={}", segmentSec, basePath);
+    spdlog::info("Recorder: {}s/segment, path={}", segmentSec, basePath);
     return true;
 }
 
 bool SegmentRecorder::stop() {
     if (!recording_) return false;
 
-    if (outCtx_) {
-        av_write_trailer(outCtx_);
-        avio_closep(&outCtx_->pb);
-        avformat_free_context(outCtx_);
-        outCtx_ = nullptr;
+    if (currentFile_) {
+        fclose(currentFile_);
+        currentFile_ = nullptr;
+        emit segmentFinished(currentFilePath_);
+        spdlog::info("Recorder: {} saved", currentFilePath_.toStdString());
     }
 
     recording_ = false;
-    spdlog::info("SegmentRecorder stopped");
+    spdlog::info("Recorder stopped");
     return true;
 }
 
-void SegmentRecorder::writePacket(AVPacket *pkt) {
-    if (!recording_ || !outCtx_ || !pkt) return;
+void SegmentRecorder::feedNALU(const uint8_t *data, size_t len) {
+    if (!recording_ || !currentFile_ || !data || len == 0) return;
 
     // 检查是否需要切分
     uint64_t now = PtsClock::nowUs();
@@ -56,85 +50,45 @@ void SegmentRecorder::writePacket(AVPacket *pkt) {
         segmentStartUs_ = now;
     }
 
-    // 重设 PTS/DTS 时间基
-    pkt->stream_index = videoStream_->index;
-    pkt->pts = nextPts_;
-    pkt->dts = nextPts_;
-    nextPts_ += 3000;  // 30fps ≈ 33ms per frame in AVRational{1,3000}
-
-    int ret = av_interleaved_write_frame(outCtx_, pkt);
-    if (ret < 0) {
-        char errbuf[256];
-        av_strerror(ret, errbuf, sizeof(errbuf));
-        spdlog::error("av_interleaved_write_frame failed: {}", errbuf);
-    }
+    fwrite(data, 1, len, currentFile_);
 }
 
-bool SegmentRecorder::rotateSegment() {
-    // 关闭当前段
-    if (outCtx_) {
-        av_write_trailer(outCtx_);
-        avio_closep(&outCtx_->pb);
-        avformat_free_context(outCtx_);
-        outCtx_ = nullptr;
+void SegmentRecorder::rotateSegment() {
+    if (currentFile_) {
+        fclose(currentFile_);
+        currentFile_ = nullptr;
+        emit segmentFinished(currentFilePath_);
+        spdlog::info("Recorder segment done: {}", currentFilePath_.toStdString());
     }
 
-    QString filePath = generateFileName();
-    nextPts_ = 0;
-
-    // 创建新 MP4
-    int ret = avformat_alloc_output_context2(&outCtx_, nullptr, "mp4", filePath.toUtf8().constData());
-    if (ret < 0 || !outCtx_) {
-        spdlog::error("avformat_alloc_output_context2 failed");
-        return false;
-    }
-
-    videoStream_ = avformat_new_stream(outCtx_, nullptr);
-    if (!videoStream_) {
-        spdlog::error("avformat_new_stream failed");
-        return false;
-    }
-
-    videoStream_->time_base = AVRational{1, 90000};
-
-    if (!(outCtx_->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&outCtx_->pb, filePath.toUtf8().constData(), AVIO_FLAG_WRITE);
-        if (ret < 0) {
-            spdlog::error("avio_open failed");
-            return false;
-        }
-    }
-
-    ret = avformat_write_header(outCtx_, nullptr);
-    if (ret < 0) {
-        spdlog::error("avformat_write_header failed");
-        return false;
+    currentFilePath_ = generateFileName();
+    currentFile_ = fopen(currentFilePath_.toUtf8().constData(), "wb");
+    if (!currentFile_) {
+        spdlog::error("Recorder: cannot create {}", currentFilePath_.toStdString());
+        return;
     }
 
     segmentIndex_++;
-    emit segmentStarted(filePath);
+    emit segmentStarted(currentFilePath_);
 
-    // 清理旧段
     cleanupOldSegments();
 
-    spdlog::info("Segment rotated: {}", filePath.toUtf8().constData());
-    return true;
+    spdlog::info("Recorder: {}", currentFilePath_.toStdString());
 }
 
 QString SegmentRecorder::generateFileName() {
     auto now = QDateTime::currentDateTime();
-    QString timestamp = now.toString("yyyyMMdd_HHmmss");
-    return QString("%1/record_%2_%3.mp4")
+    QString ts = now.toString("yyyyMMdd_HHmmss");
+    return QString("%1/record_%2_%3.h264")
         .arg(basePath_)
-        .arg(timestamp)
+        .arg(ts)
         .arg(segmentIndex_, 4, 10, QChar('0'));
 }
 
 void SegmentRecorder::cleanupOldSegments() {
-    // 保留最近 MAX_SEGMENT_COUNT 个文件
     QDir dir(basePath_);
     QStringList filters;
-    filters << "record_*.mp4";
+    filters << "record_*.h264";
     dir.setNameFilters(filters);
     dir.setSorting(QDir::Name);
 
@@ -144,5 +98,21 @@ void SegmentRecorder::cleanupOldSegments() {
     int toRemove = files.size() - MAX_SEGMENT_COUNT;
     for (int i = 0; i < toRemove; i++) {
         QFile::remove(files[i].absoluteFilePath());
+        spdlog::info("Recorder: removed old {}", files[i].fileName().toStdString());
     }
+}
+
+// static
+QStringList SegmentRecorder::listFiles(const char *basePath) {
+    QDir dir(basePath);
+    QStringList filters;
+    filters << "record_*.h264";
+    dir.setNameFilters(filters);
+    dir.setSorting(QDir::Name | QDir::Reversed);  // 新的在前面
+
+    QStringList result;
+    for (const auto &fi : dir.entryInfoList()) {
+        result.append(fi.absoluteFilePath());
+    }
+    return result;
 }

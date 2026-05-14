@@ -46,7 +46,7 @@ constexpr int      WD_CHECK_INTERVAL_MS   = 1000;
 constexpr int      PERF_STATS_INTERVAL_MS = 1000;
 
 // --- 录制路径 ---
-constexpr const char* RECORD_BASE_PATH = "/data/record";
+constexpr const char* RECORD_BASE_PATH = "/userdata/records";
 
 // --- 模型路径 ---
 constexpr const char* RKNN_MODEL_PATH = "model/yolov5s.rknn";

@@ -2,6 +2,8 @@
 #include "capture.h"
 #include "mpp_encoder.h"
 #include "rtsp_server.h"
+#include "segment_recorder.h"
+#include "detector.h"
 #include "watchdog.h"
 #include "perf_monitor.h"
 #include "video_widget.h"
@@ -43,16 +45,33 @@ int main(int argc, char *argv[]) {
     RtspServer rtsp;
     rtsp.start(RTSP_PORT, RTSP_MOUNT);
 
+    // --- 分段录像 ---
+    SegmentRecorder recorder;
+
     // 编码 NAL → 文件 + RTSP
-    FILE *encFile = fopen("/tmp/encode.h264", "wb");
     encoder.setNalCallback([&](const uint8_t *data, size_t len, uint64_t /*pts*/) {
-        if (encFile) fwrite(data, 1, len, encFile);
         rtsp.feedNALU(data, len, 0);
+        if (recorder.isRecording()) recorder.feedNALU(data, len);
     });
 
     // --- 监控 ---
     PerfMonitor perf;
     perf.start();
+
+    window.setModules(&capture, &rtsp, &recorder, nullptr, nullptr, &perf);
+    window.setCaptureRunning(true);
+
+    // YOLO 检测（video1 → 640×640 → RKNN）
+    DetectThread detector;
+    if (detector.open(VIDEO1_DEV, AI_WIDTH, AI_HEIGHT)) {
+        detector.loadModel(RKNN_MODEL_PATH);
+        QObject::connect(&detector, &DetectThread::detectionReady,
+                         &window, &MainWindow::onDetection);
+        detector.start();
+        spdlog::info("YOLO detector started");
+    } else {
+        spdlog::warn("YOLO video1 not available");
+    }  // 采集已自动启动，同步按钮状态
 
     // --- 显示（10ms 快速轮询） ---
     int renderCount = 0;
@@ -90,8 +109,9 @@ int main(int argc, char *argv[]) {
     // --- 清理 ---
     capture.stop();
     encoder.stop();
+    recorder.stop();
+    detector.stop();
     rtsp.stop();
-    if (encFile) fclose(encFile);
     avformat_network_deinit();
     return ret;
 }

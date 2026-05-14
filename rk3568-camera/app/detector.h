@@ -5,27 +5,25 @@
 #include <QRect>
 #include <QString>
 
-// RKNN 前向声明
-#ifndef DISABLE_RKNN
-// rknn_api.h defines rknn_context as uint64_t, don't re-declare
+#ifdef DISABLE_RKNN
+typedef uint64_t rknn_context;
+#else
 #include <rknn/rknn_api.h>
 #endif
-
-struct AVFormatContext;
 
 // ============================================================================
 // YOLO 检测结果
 // ============================================================================
 
 struct Detection {
-    QRect    bbox;         // 边界框（原始坐标，需映射到显示分辨率）
+    QRect    bbox;
     int      classId  = 0;
     QString  className;
     float    confidence = 0.0f;
 };
 
 // ============================================================================
-// YOLO 推理线程：独立从 /dev/video1 读取 640×640 NV12 → RKNN NPU 推理
+// YOLO 推理线程：原生 V4L2 从 /dev/video1 读取 640×640 NV12 → RKNN NPU
 // ============================================================================
 
 class DetectThread : public QThread {
@@ -47,16 +45,17 @@ protected:
     void run() override;
 
 private:
-    bool initV4L2();
     void preprocess(void *nv12Data, uint8_t *inputBuf);
     QVector<Detection> postProcess(float *output, int width, int height);
 
     QString            devicePath_;
-    AVFormatContext   *fmtCtx_     = nullptr;
-    rknn_context       rknnCtx_    = 0;
+    int                v4l2Fd_      = -1;
+    void              *mmapAddrs_[4] = {};
+    int                bufSizes_[4] = {};
+    rknn_context       rknnCtx_     = 0;
     std::atomic<bool>  running_{false};
 
-    uint8_t            *inputBuf_  = nullptr;    // RKNN 输入 buffer
+    uint8_t            *inputBuf_  = nullptr;
     size_t              inputSize_ = 0;
 
     int                 detWidth_  = 0;

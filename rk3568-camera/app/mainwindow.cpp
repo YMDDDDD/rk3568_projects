@@ -1,7 +1,6 @@
 #include "mainwindow.h"
 #include "video_widget.h"
 #include "capture.h"
-#include "mpp_encoder.h"
 #include "rtsp_server.h"
 #include "segment_recorder.h"
 #include "detector.h"
@@ -15,6 +14,7 @@
 #include <QLabel>
 #include <QDockWidget>
 #include <QGroupBox>
+#include <QFileInfo>
 #include <spdlog/spdlog.h>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
@@ -25,6 +25,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
 }
 
 MainWindow::~MainWindow() {}
+
+void MainWindow::setCaptureRunning(bool on) {
+    captureActive_ = on;
+    actCapture_->setChecked(on);
+    actRtsp_->setEnabled(on);
+    actRecord_->setEnabled(on);
+    actAI_->setEnabled(on);
+}
 
 void MainWindow::setModules(CaptureThread *capture, RtspServer *rtsp,
                              SegmentRecorder *recorder, DetectThread *detector,
@@ -94,6 +102,15 @@ void MainWindow::setupUI() {
 
     layout->addWidget(perfGroup);
     layout->addWidget(serviceGroup);
+
+    // 录像文件列表
+    auto *recGroup = new QGroupBox("录像回放", panel);
+    auto *recLayout = new QVBoxLayout(recGroup);
+    recList_ = new QListWidget(panel);
+    recList_->setAlternatingRowColors(true);
+    recLayout->addWidget(recList_);
+    layout->addWidget(recGroup);
+
     layout->addStretch();
 
     dock->setWidget(panel);
@@ -102,6 +119,8 @@ void MainWindow::setupUI() {
     // 状态栏
     statusLabel_ = new QLabel("就绪");
     statusBar()->addPermanentWidget(statusLabel_);
+
+    refreshRecordings();
 }
 
 void MainWindow::onCaptureToggle(bool checked) {
@@ -146,6 +165,19 @@ void MainWindow::onRtspToggle(bool checked) {
     }
 }
 
+void MainWindow::refreshRecordings() {
+    if (!recList_) return;
+    recList_->clear();
+    auto files = SegmentRecorder::listFiles();
+    for (const auto &path : files) {
+        QFileInfo fi(path);
+        QString label = fi.fileName();
+        auto *item = new QListWidgetItem(label);
+        item->setToolTip(path);
+        recList_->addItem(item);
+    }
+}
+
 void MainWindow::onRecordToggle(bool checked) {
     if (!recorder_) return;
 
@@ -160,6 +192,7 @@ void MainWindow::onRecordToggle(bool checked) {
         recordLabel_->setText("录像: 未启动");
         spdlog::info("Recording stopped");
     }
+    refreshRecordings();
 }
 
 void MainWindow::onAIToggle(bool checked) {
