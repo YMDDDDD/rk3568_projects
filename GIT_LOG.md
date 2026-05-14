@@ -189,3 +189,30 @@ git add rk3568-camera/
 git commit -m "fix: stride=2112根因——G_FMT带回旧bytesperline导致，加清零修复"
 git push
 ```
+
+## 2026-05-14 第八次推送
+
+### 推送内容
+
+修复 MPP 编码器 SET_CFG 返回 -6 的问题，恢复全链路联调。
+
+### 修复的问题
+
+**MPP SET_CFG 返回 -6**
+- 根因: 缺少 `prep:hor_stride` 和 `prep:ver_stride` 参数
+- 修复: 补齐全部编码配置参数（和 test_mpp_real.c 完全一致）
+- SET_CFG 返回 0，编码器正常运行
+
+**当前全链路状态**
+- 采集 30fps（stride=1920 紧密排列）
+- 显示 ~290帧/10秒
+- 编码 30fps
+- RTSP 服务器就绪
+
+### 使用的 git 命令
+
+```bash
+git add rk3568-camera/
+git commit -m "fix: MPP编码器SET_CFG修复——补齐prep:hor_stride/ver_stride参数"
+git push
+```

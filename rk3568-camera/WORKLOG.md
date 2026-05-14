@@ -409,3 +409,22 @@ Capture: frame 1 idx=0 ✅
 - GIT_LOG.md 同步更新
 
 当前状态: 采集+显示正常（stride=1920 紧密排列），MPP 编码器待重新集成
+
+### 15:34 — MPP 编码器 SET_CFG 修复
+
+**问题：** `mppApi_->control(mppCtx_, MPP_ENC_SET_CFG, cfg)` 返回 -6。
+
+**排查：** 对比 test_mpp_real.c 的配置，发现少了 `prep:hor_stride` 和 `prep:ver_stride` 参数。
+
+**修复：** 补齐全部参数（和 test_mpp_real.c 完全一致）：
+```
+prep:width, prep:height, prep:hor_stride, prep:ver_stride, prep:format,
+rc:mode, rc:bps_target, rc:gop, rc:fps_in_num/denorm, rc:fps_out_num/denorm
+```
+SET_CFG 返回 0。
+
+**验证：** 编码 ~1170帧/40秒（30fps），编码文件正常产出，RTSP 服务器就绪。
+
+### 15:38 — GitHub 第八次推送
+
+提交 MPP 编码器 SET_CFG 修复 + 全链路联调代码。
