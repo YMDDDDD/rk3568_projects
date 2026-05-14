@@ -51,6 +51,8 @@ bool CaptureThread::configureFormat(uint32_t width, uint32_t height, uint32_t fp
     fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
     fmt.fmt.pix_mp.field       = V4L2_FIELD_NONE;
     fmt.fmt.pix_mp.num_planes  = 1;
+    // 清零 bytesperline，让驱动自动计算 stride（否则 G_FMT 带回的旧值会被保留）
+    fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;
     fmt.fmt.pix_mp.plane_fmt[0].sizeimage = width * height * 3 / 2;
 
     if (ioctl(v4l2Fd_, VIDIOC_S_FMT, &fmt) < 0) {
@@ -105,9 +107,7 @@ void CaptureThread::tick() {
 
         ref->pts = PtsClock::nowUs();
         displayQueue_.tryPush(ref);
-        // encodeQueue_.push(ref);  // FIXME: 编码器启用后恢复
-        emit frameReady();
+        encodeQueue_.tryPush(ref);  // 非阻塞，防止编码器未启动时卡住
+        emit heartbeat();
     }
-
-    emit heartbeat();
 }

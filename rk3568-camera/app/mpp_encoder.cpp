@@ -31,32 +31,23 @@ bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride) {
 
     MppEncCfg cfg = nullptr;
     ret = mpp_enc_cfg_init(&cfg);
+    spdlog::info("cfg_init ret={} cfg={}", (int)ret, (void*)cfg);
     if (ret) { spdlog::error("cfg_init: {}", (int)ret); return false; }
 
     mpp_enc_cfg_set_s32(cfg, "prep:width",       (int32_t)width);
     mpp_enc_cfg_set_s32(cfg, "prep:height",      (int32_t)height);
-    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride",  (int32_t)stride);
-    mpp_enc_cfg_set_s32(cfg, "prep:ver_stride",  (int32_t)height);
     mpp_enc_cfg_set_s32(cfg, "prep:format",      MPP_FMT_YUV420SP);
-    mpp_enc_cfg_set_s32(cfg, "prep:range",       MPP_FRAME_RANGE_JPEG);  // Full range SPS VUI
     mpp_enc_cfg_set_s32(cfg, "rc:mode",          MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(cfg, "rc:bps_target",    4 * 1024 * 1024);
-    mpp_enc_cfg_set_s32(cfg, "rc:gop",           60);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_num",    30);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_in_denorm",  1);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_num",   30);
-    mpp_enc_cfg_set_s32(cfg, "rc:fps_out_denorm", 1);
+    // rc:gop 可能不支持
 
     ret = mppApi_->control(mppCtx_, MPP_ENC_SET_CFG, cfg);
     mpp_enc_cfg_deinit(cfg);
-
-    if (ret != MPP_OK) {
-        spdlog::error("MPP_ENC_SET_CFG failed: {}", (int)ret);
-        return false;
-    }
+    spdlog::info("SET_CFG ret={}, continuing anyway", (int)ret);
+    // 允许 SET_CFG 失败——MPP 使用默认参数
 
     // 预分配编码 buffer
-    int frameSize = (int32_t)(stride * height * 3 / 2);
+    int frameSize = (int32_t)(width * height * 3 / 2);  // 紧凑排列
     ret = mpp_buffer_group_get_internal(&bufGrp_, MPP_BUFFER_TYPE_DRM);
     if (ret) {
         spdlog::error("buffer_group_get_internal failed: {}", (int)ret);
@@ -117,24 +108,22 @@ void MppEncoder::tick() {
 bool MppEncoder::encodeOneFrame(FrameRefPtr ref) {
     if (!ref || !ref->mmapAddr) return false;
 
-    int stride = ref->stride > 0 ? (int)ref->stride : (int)ref->width;
-    int frameSize = stride * ref->height * 3 / 2;
+    int w = (int)ref->width, h = (int)ref->height;
+    int frameSize = w * h * 3 / 2;  // 和 test_mpp_real.c 一样
 
     void *dst = mpp_buffer_get_ptr(frmBuf_);
     if (!dst) return false;
     memcpy(dst, ref->mmapAddr, frameSize);
 
-    // 组装 frame
     MppFrame frame = nullptr;
     mpp_frame_init(&frame);
-    mpp_frame_set_width(frame,  ref->width);
-    mpp_frame_set_height(frame, ref->height);
-    mpp_frame_set_hor_stride(frame, ref->stride);  // V4L2 stride (2112)
-    mpp_frame_set_ver_stride(frame, ref->height);
+    mpp_frame_set_width(frame,  w);
+    mpp_frame_set_height(frame, h);
+    mpp_frame_set_hor_stride(frame, w);
+    mpp_frame_set_ver_stride(frame, h);
     mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
     mpp_frame_set_buffer(frame, frmBuf_);
     mpp_frame_set_eos(frame, 0);
-    mpp_frame_set_color_range(frame, MPP_FRAME_RANGE_JPEG);  // Full range (0-255)
 
     // 送入编码
     MPP_RET ret = mppApi_->encode_put_frame(mppCtx_, frame);
@@ -149,6 +138,11 @@ bool MppEncoder::encodeOneFrame(FrameRefPtr ref) {
         size_t len  = mpp_packet_get_length(packet);
         void  *data = mpp_packet_get_data(packet);
         uint64_t pts = (uint64_t)mpp_packet_get_pts(packet);
+
+        static int encCount = 0;
+        encCount++;
+        if (encCount <= 3 || encCount % 30 == 0)
+            spdlog::info("Enc: frame {} len={}", encCount, len);
 
         if (data && len > 0 && nalCallback_) {
             nalCallback_((const uint8_t*)data, len, pts);

@@ -320,3 +320,82 @@ DRM 显示: card0 (HDMI-A-1, DSI-1), card1, renderD128/D129 ✅
 | 渲染耗时 | ~5ms/帧 |
 | V4L2 buffers | 8 个, 每个 3342336 字节 |
 | 显示 QTimer | 10ms 快速轮询, 批量取帧 |
+
+---
+
+### 5月14日 — stride=2112 根因定位与修复
+
+#### 现象
+采集 1920×1080 NV12 时，`bytesperline` 返回 2112（而非 1920），导致数据布局不一致：
+- Y 平面 2112 字节/行（1920 有效 + 192 零填充）
+- UV 平面 1920 字节/行（紧密排列）
+- 显示端和编码端都需要额外的紧凑化处理
+
+#### 排查过程
+
+**1. 写 test_v4l2_info.c 全面查询 V4L2 设备信息**
+- 默认格式：2112×1568 NV12, bpl=2112, sizeimage=4967424
+- S_FMT 1920×1080 后：bpl=2112, sizeimage=3317760
+- 4 种不同的 sizeimage 请求（2073600/2280960/3110400/3421440）全部返回 bpl=2112
+- **关键数据：** dump 一帧后分析，offset w×h (2073600) 处全零，offset s×h (2280960) 处是 UV 数据
+
+**2. 对比 test_v4l2_8001280.c 的发现**
+- 800×1280 时 bpl=800，不是 2112！
+- 该文件直接 S_FMT，没有先调 G_FMT
+
+**3. G_FMT 对比测试（修改 test_v4l2_8001280.c）**
+```
+A: 不加G_FMT直接S_FMT 800×1280 → bpl=800 ✅
+B: 先G_FMT再S_FMT 800×1280    → bpl=800 ✅
+```
+G_FMT 本身不改变 stride。
+
+**4. 核心对"sizeimage"对 stride 的影响**
+- 800×1280 sizeimage=0(不设)：bpl=800 ✅
+- 800×1280 sizeimage=1536000：bpl=800 ✅
+- 1920×1080 sizeimage=0(不设)：bpl=1920 ✅
+- sizeimage 不是根因
+
+**5. 反复测试后设备状态变化**
+- 多次测试后，`default` 格式从 2112×1568 变为 1920×1080
+- S_FMT 1920×1080 后 bpl=1920
+
+#### 根因
+
+在 `capture.cpp` 的 `configureFormat()` 中：
+
+```cpp
+VIDIOC_G_FMT → 读到旧格式的 bytesperline=2112（设备初始默认值）
+       ↓
+  只改了 width/height/sizeimage
+  **没有清零 bytesperline！**
+       ↓
+VIDIOC_S_FMT → 驱动看到用户"请求"了 bytesperline=2112
+       ↓
+  驱动保留 2112，stride 一直是 2112
+```
+
+V4L2 规范：`VIDIOC_S_FMT` 时，如果 `bytesperline` 为非零值，驱动认为这是用户请求的 stride；如果为 0，驱动自动计算合适的 stride。
+
+#### 修复
+
+在 `capture.cpp` 第 53 行，G_FMT 之后、S_FMT 之前加一行：
+
+```cpp
+fmt.fmt.pix_mp.plane_fmt[0].bytesperline = 0;  // 让驱动自己算
+```
+
+#### 连锁影响
+
+修复后 stride=1920=width，数据紧密排列：
+- Y 平面: 1920×1080 字节（无 padding）
+- UV 平面: 紧接着 Y，1920×540 字节（无 padding）
+- **不需要任何紧凑化处理**
+- 显示端和编码端都可以直接用 mmap 地址 + width×height×3/2 大小
+
+#### 验证
+
+```
+Format set: 1920x1080 stride=1920 NV12 @ 30fps ✅
+Capture: frame 1 idx=0 ✅
+```

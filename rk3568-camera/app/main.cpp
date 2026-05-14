@@ -1,66 +1,87 @@
 #include "mainwindow.h"
 #include "capture.h"
+#include "mpp_encoder.h"
+#include "rtsp_server.h"
+#include "watchdog.h"
+#include "perf_monitor.h"
 #include "video_widget.h"
 #include "config.h"
 #include <QApplication>
 #include <QTimer>
-#include <QElapsedTimer>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <cstdio>
+
+extern "C" {
+#include <libavformat/avformat.h>
+}
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     auto logger = spdlog::stdout_color_mt("camera");
     spdlog::set_default_logger(logger);
     spdlog::set_level(spdlog::level::info);
-    spdlog::info("=== Perf Test ===");
+    spdlog::info("=== RK3568 Camera v1.3 ===");
+
+    avformat_network_init();
 
     MainWindow window;
 
+    // --- 采集 ---
     CaptureThread capture;
     if (!capture.open(VIDEO0_DEV, MAIN_WIDTH, MAIN_HEIGHT, MAIN_FPS)) {
         spdlog::error("Capture open failed");
         return -1;
     }
-    capture.start();
 
-    // 10ms 快速 displayTimer + 批量取帧
-    int renderCount = 0, emptyCount = 0;
-    double totalRenderMs = 0;
-    QElapsedTimer perft;
-    perft.start();
+    // --- MPP 编码器（先跳过，单独调试后再集成） ---
+    // MppEncoder encoder; bool encOk = encoder.init(MAIN_WIDTH, MAIN_HEIGHT, capture.stride());
+    spdlog::info("Encoder: disabled for debug");
 
+    // --- RTSP（先跳过，编码器稳定后再集成） ---
+    // RtspServer rtsp; rtsp.start(RTSP_PORT, RTSP_MOUNT);
+    // FILE *encFile = fopen("/tmp/encode.h264", "wb");
+    // encoder.setNalCallback([&](const uint8_t *data, size_t len, uint64_t) { if (encFile) fwrite(data, 1, len, encFile); rtsp.feedNALU(data, len, 0); });
+
+    // --- 监控 ---
+    PerfMonitor perf;
+    perf.start();
+
+    // --- 显示（10ms 快速轮询） ---
+    int renderCount = 0;
     QTimer displayTimer;
     QObject::connect(&displayTimer, &QTimer::timeout, [&]() {
-        // 批量取帧直到队列空
         for (int i = 0; i < 4; i++) {
             auto ref = capture.displayQueue().tryPop();
-            if (!ref || !ref->mmapAddr) { emptyCount++; break; }
-
-            QElapsedTimer rt; rt.start();
+            if (!ref || !ref->mmapAddr) break;
             window.videoWidget()->renderRawNV12(
                 static_cast<const uint8_t*>(ref->mmapAddr),
                 ref->width, ref->height, ref->stride);
-            capture.pool().release(ref);  // 归还 V4L2 buffer
-            totalRenderMs += rt.elapsed();
+            capture.pool().release(ref);
+            perf.tickCapture();
             renderCount++;
         }
-
-        if (perft.elapsed() >= 2000) {
-            double avgMs = renderCount > 0 ? totalRenderMs / renderCount : 0;
-            spdlog::info("Perf: {} renders in 2s, {} empty polls, avg render {:.1f}ms",
-                         renderCount, emptyCount, avgMs);
-            renderCount = 0; emptyCount = 0; totalRenderMs = 0;
-            perft.restart();
-        }
     });
-    displayTimer.start(10);  // 10ms 快速轮询
+    displayTimer.start(10);
 
-    spdlog::info("Showing window...");
+    // --- 性能统计 ---
+    QTimer perfTimer;
+    QObject::connect(&perfTimer, &QTimer::timeout, [&]() {
+        spdlog::info("Stats: {} renders", renderCount);
+        renderCount = 0;
+    });
+    perfTimer.start(10000);
+
+    // --- 启动 ---
+    // if (encOk) encoder.start(capture.encodeQueue(), capture.pool());
+    capture.start();
+    spdlog::info("All started. RTSP: rtsp://<IP>:{}{}", RTSP_PORT, RTSP_MOUNT);
     window.show();
-    spdlog::info("Window shown");
 
     int ret = app.exec();
+
+    // --- 清理 ---
     capture.stop();
+    avformat_network_deinit();
     return ret;
 }

@@ -189,6 +189,10 @@ static void forEachNalu(const uint8_t *data, size_t len, F callback) {
 }
 
 void RtspServer::feedNALU(const uint8_t *data, size_t len, uint64_t /*pts*/) {
+    static int cnt = 0; cnt++;
+    if (cnt <= 5 || cnt % 30 == 0)
+        spdlog::info("feedNALU {}: len={} cli={}", cnt, len, hasClient_);
+
     if (!hasClient_ || !rtp_.rtspSock || len < 4) {
         cacheNalu(data, len);
         return;
