@@ -524,3 +524,23 @@ video0 和 video1 在同一进程中同时采集，互不冲突。
 #### 后续：YOLO 模型准备
 
 采集通道已就绪，缺模型文件（`yolov5s.rknn`）和输出解码（`postProcess` 中的 NMS + 坐标映射）。准备流程见 SOLUTION.md 第九节。
+
+### 15:55 — BufferPool 引用计数重构
+
+**问题（5项）：**
+1. refCount=1 但有两个消费者（display+encoder），先 release 的归零导致悬空
+2. release() 中 fetch_sub 和 load 存在 TOCTOU 竞态
+3. encode 路径和 display 路径各自手动 release，重复归还风险
+4. shared_ptr 和 FrameRef::refCount 双重引用计数体系混乱
+5. acquire 末尾三行重复 `return ref;`
+
+**修复：** 用 shared_ptr 自定义 deleter 替代手动 release
+- FrameRef 删除 refCount 成员和相关方法
+- acquire 用 `new FrameRef()` + 自定义 deleter 创建 shared_ptr
+- deleter 中直接 `queueBuffer(ref->v4l2Index)` 归还
+- 删除 BufferPool::release 方法
+- 删除 main.cpp 和 mpp_encoder.cpp 中的手动 release 调用
+
+**优势：** shared_ptr 自动管理引用计数，最后一个消费者析构时自动归还 V4L2 buffer，无需手动协调多个消费者。
+
+**验证：** 运行无 QBUF 错误，采集+编码 30fps 稳定。

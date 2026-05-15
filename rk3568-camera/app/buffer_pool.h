@@ -21,11 +21,8 @@ public:
     // V4L2 REQBUFS + QUERYBUF + mmap + EXPBUF
     bool init(int v4l2Fd, uint32_t width, uint32_t height, uint32_t stride);
 
-    // 采集线程: dequeue → 分配 FrameRef
+    // 采集线程: dequeue → 分配 FrameRef（shared_ptr 析构自动归还 V4L2）
     FrameRefPtr acquire(uint32_t index);
-
-    // 消费者: 减少引用计数，归零时归还 V4L2 (VIDIOC_QBUF)
-    void release(FrameRefPtr ref);
 
     // V4L2 原生 dequeue/queue
     bool dequeueBuffer(uint32_t &index);

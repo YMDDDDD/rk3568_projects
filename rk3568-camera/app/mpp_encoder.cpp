@@ -106,7 +106,7 @@ void MppEncoder::tick() {
         if (!ref) break;
 
         bool ok = encodeOneFrame(ref);
-        bufferPool_->release(ref);
+        // ref 出作用域自动析构 — shared_ptr deleter 自动 QBUF
 
         if (ok) {
             emit heartbeat();

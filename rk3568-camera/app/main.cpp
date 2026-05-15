@@ -83,7 +83,7 @@ int main(int argc, char *argv[]) {
             window.videoWidget()->renderRawNV12(
                 static_cast<const uint8_t*>(ref->mmapAddr),
                 ref->width, ref->height, ref->stride);
-            capture.pool().release(ref);
+            // ref 出作用域自动析构 — shared_ptr deleter 自动 QBUF
             perf.tickCapture();
             renderCount++;
         }

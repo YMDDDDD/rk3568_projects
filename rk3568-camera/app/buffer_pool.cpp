@@ -102,20 +102,26 @@ bool BufferPool::init(int v4l2Fd, uint32_t width, uint32_t height, uint32_t stri
 FrameRefPtr BufferPool::acquire(uint32_t index) {
     if (index >= static_cast<uint32_t>(numBuffers_)) return nullptr;
 
-    auto ref = std::make_shared<FrameRef>();
-    ref->init(dmabufFds_[index], 0, width_, height_, stride_,
-              MAIN_FORMAT, bufferSizes_[index], index, v4l2Fd_, mmapAddrs_[index], 1);  // display-only
-    return ref;
-    return ref;
-    return ref;
-}
+    auto *raw = new FrameRef();
+    raw->dmabufFd  = dmabufFds_[index];
+    raw->width     = width_;
+    raw->height    = height_;
+    raw->stride    = stride_;
+    raw->format    = MAIN_FORMAT;
+    raw->size      = bufferSizes_[index];
+    raw->v4l2Index = index;
+    raw->v4l2Fd    = v4l2Fd_;
+    raw->mmapAddr  = mmapAddrs_[index];
 
-void BufferPool::release(FrameRefPtr ref) {
-    if (!ref) return;
-    ref->release();
-    if (ref->ref() == 0) {  // 正好归零才归还，防止重复释放
-        queueBuffer(ref->v4l2Index);
-    }
+    // 自定义 deleter：shared_ptr 引用计数归零时自动 QBUF 归还 V4L2
+    auto deleter = [this](FrameRef *ref) {
+        if (ref) {
+            this->queueBuffer(ref->v4l2Index);
+            delete ref;
+        }
+    };
+
+    return FrameRefPtr(raw, deleter);
 }
 
 bool BufferPool::dequeueBuffer(uint32_t &index) {
