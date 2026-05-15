@@ -233,3 +233,29 @@ git add rk3568-camera/
 git commit -m "fix: video1双路采集修复 + 分段录像 + 界面录像回放列表"
 git push
 ```
+
+## 2026-05-15 第十一次推送
+
+### 推送内容
+
+BufferPool 引用计数重构：shared_ptr 自定义 deleter 自动归还 V4L2 buffer。
+
+### 修复的问题（5 项）
+1. refCount=1 但有两个消费者（display+encoder）
+2. release() 中 TOCTOU 竞态条件
+3. 手动 release 分散且重复归还风险
+4. shared_ptr + FrameRef::refCount 双重引用计数
+5. acquire 末尾三行重复 return ref
+
+### 修复方案
+- FrameRef 删除 refCount 成员
+- acquire 用 `new FrameRef()` + 自定义 deleter, 最后一个消费者析构时自动 QBUF
+- 删除 BufferPool::release
+- 删除 main.cpp / mpp_encoder.cpp 中的手动 release
+
+### 使用的 git 命令
+```bash
+git add rk3568-camera/
+git commit -m "refactor: BufferPool shared_ptr自定义deleter自动归还(buffer)"
+git push
+```
