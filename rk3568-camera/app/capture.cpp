@@ -105,7 +105,6 @@ void CaptureThread::tick() {
         auto ref = pool_.acquire(index);
         if (!ref) continue;
 
-        ref->pts = PtsClock::nowUs();
         displayQueue_.tryPush(ref);
         encodeQueue_.tryPush(ref);  // 非阻塞，防止编码器未启动时卡住
         emit heartbeat();

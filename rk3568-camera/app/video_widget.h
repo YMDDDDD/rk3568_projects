@@ -14,6 +14,7 @@ public:
 
     void renderFrame(FrameRefPtr ref);
     void renderRawNV12(const uint8_t *data, int w, int h, int stride = 0);
+    void renderDmaBuf(int dmabufFd, int w, int h, int stride);
     void setDetections(QVector<Detection> detections);
 
 protected:

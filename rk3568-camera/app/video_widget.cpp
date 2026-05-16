@@ -2,7 +2,14 @@
 #include <spdlog/spdlog.h>
 #include <QPainter>
 #include <QOpenGLFunctions>
+#define EGL_EGLEXT_PROTOTYPES
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <drm/drm_fourcc.h>
 #include <unistd.h>
+
+// glEGLImageTargetTexture2DOES: 通过函数指针动态加载，避免与 Qt 头中 GL 包含冲突
+typedef void (*PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)(GLenum target, void *image);
 
 static const char *vertexShaderSource = R"(
     attribute vec2 position;
@@ -90,7 +97,7 @@ void VideoWidget::initShaders() {
 
 void VideoWidget::renderFrame(FrameRefPtr ref) {
     if (!ref) return;
-    renderRawNV12(nullptr, ref->width, ref->height);
+    renderDmaBuf(ref->dmabufFd, ref->width, ref->height, ref->stride);
 }
 
 void VideoWidget::renderRawNV12(const uint8_t *data, int w, int h, int stride) {
@@ -148,4 +155,66 @@ void VideoWidget::resizeGL(int w, int h) {
     glViewport(0, 0, w, h);
 }
 
-void VideoWidget::importDmaBuf(int) {}
+void VideoWidget::renderDmaBuf(int dmabufFd, int w, int h, int stride) {
+    if (dmabufFd < 0 || w <= 0 || h <= 0) return;
+
+    frameW_   = w;
+    frameH_   = h;
+    hasFrame_ = true;
+
+    makeCurrent();
+
+    // 动态加载 glEGLImageTargetTexture2DOES
+    static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEglImageTarget =
+        (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+
+    EGLDisplay dpy = eglGetCurrentDisplay();
+    if (dpy == EGL_NO_DISPLAY || !glEglImageTarget) { doneCurrent(); return; }
+
+    EGLint attr_y[] = {
+        EGL_WIDTH,                     w,
+        EGL_HEIGHT,                    h,
+        EGL_LINUX_DRM_FOURCC_EXT,      (EGLint)DRM_FORMAT_R8,
+        EGL_DMA_BUF_PLANE0_FD_EXT,     dmabufFd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+        EGL_DMA_BUF_PLANE0_PITCH_EXT,  stride,
+        EGL_NONE
+    };
+    EGLImageKHR imgY = eglCreateImageKHR(dpy, EGL_NO_CONTEXT,
+                                          EGL_LINUX_DMA_BUF_EXT, nullptr, attr_y);
+    if (imgY != EGL_NO_IMAGE_KHR) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texY_);
+        glEglImageTarget(GL_TEXTURE_2D, imgY);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        eglDestroyImageKHR(dpy, imgY);
+    }
+
+    EGLint attr_uv[] = {
+        EGL_WIDTH,                     w / 2,
+        EGL_HEIGHT,                    h / 2,
+        EGL_LINUX_DRM_FOURCC_EXT,      (EGLint)DRM_FORMAT_GR88,
+        EGL_DMA_BUF_PLANE0_FD_EXT,     dmabufFd,
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)(stride * h),
+        EGL_DMA_BUF_PLANE0_PITCH_EXT,  stride,
+        EGL_NONE
+    };
+    EGLImageKHR imgUV = eglCreateImageKHR(dpy, EGL_NO_CONTEXT,
+                                           EGL_LINUX_DMA_BUF_EXT, nullptr, attr_uv);
+    if (imgUV != EGL_NO_IMAGE_KHR) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, texUV_);
+        glEglImageTarget(GL_TEXTURE_2D, imgUV);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        eglDestroyImageKHR(dpy, imgUV);
+    }
+
+    doneCurrent();
+    update();
+}
+
+void VideoWidget::importDmaBuf(int) {
+    // dmabuf 导入已由 renderDmaBuf() 完成，此函数保留兼容
+}

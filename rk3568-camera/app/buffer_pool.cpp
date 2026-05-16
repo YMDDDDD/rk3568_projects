@@ -1,4 +1,5 @@
 #include "buffer_pool.h"
+#include "pts_clock.h"
 #include <spdlog/spdlog.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -112,6 +113,7 @@ FrameRefPtr BufferPool::acquire(uint32_t index) {
     raw->v4l2Index = index;
     raw->v4l2Fd    = v4l2Fd_;
     raw->mmapAddr  = mmapAddrs_[index];
+    raw->pts       = PtsClock::nowUs();   // 采集时刻统一时间戳
 
     // 自定义 deleter：shared_ptr 引用计数归零时自动 QBUF 归还 V4L2
     auto deleter = [this](FrameRef *ref) {

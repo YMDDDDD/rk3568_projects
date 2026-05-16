@@ -34,6 +34,7 @@ public:
 
     int  fd() const { return v4l2Fd_; }
     int  numBuffers() const { return numBuffers_; }
+    int  dmabufFd(uint32_t index) const { return (int)index < numBuffers_ ? dmabufFds_[index] : -1; }
 
 private:
     bool exportDmaBuf(uint32_t index);

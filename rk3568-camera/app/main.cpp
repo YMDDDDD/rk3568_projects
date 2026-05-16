@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
 
     // --- MPP 编码器 ---
     MppEncoder encoder;
-    bool encOk = encoder.init(MAIN_WIDTH, MAIN_HEIGHT, capture.stride());
+    bool encOk = encoder.init(MAIN_WIDTH, MAIN_HEIGHT, capture.stride(), capture.pool());
     spdlog::info("MPP encoder init: {}", encOk ? "OK" : "FAIL");
 
     // --- RTSP ---
@@ -73,22 +73,21 @@ int main(int argc, char *argv[]) {
         spdlog::warn("YOLO video1 not available");
     }  // 采集已自动启动，同步按钮状态
 
-    // --- 显示（10ms 快速轮询） ---
+    // --- 显示（10ms 快速轮询，EGL dmabuf 零拷贝） ---
     int renderCount = 0;
     QTimer displayTimer;
     QObject::connect(&displayTimer, &QTimer::timeout, [&]() {
         for (int i = 0; i < 4; i++) {
             auto ref = capture.displayQueue().tryPop();
-            if (!ref || !ref->mmapAddr) break;
-            window.videoWidget()->renderRawNV12(
-                static_cast<const uint8_t*>(ref->mmapAddr),
-                ref->width, ref->height, ref->stride);
+            if (!ref || ref->dmabufFd < 0) break;
+            window.videoWidget()->renderDmaBuf(
+                ref->dmabufFd, ref->width, ref->height, ref->stride);
             // ref 出作用域自动析构 — shared_ptr deleter 自动 QBUF
             perf.tickCapture();
             renderCount++;
         }
     });
-    displayTimer.start(10);
+    displayTimer.start(30);
 
     // --- 性能统计 ---
     QTimer perfTimer;

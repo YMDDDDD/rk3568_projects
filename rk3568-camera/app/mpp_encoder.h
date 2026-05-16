@@ -3,6 +3,7 @@
 #include "spsc_queue.h"
 #include <QObject>
 #include <QTimer>
+#include <vector>
 #include <functional>
 #include <cstdint>
 
@@ -18,7 +19,7 @@ typedef void* MppFrame;
 typedef void* MppPacket;
 
 // ============================================================================
-// MPP 硬件编码器（主线程 QTimer 驱动）
+// MPP 硬件编码器（主线程 QTimer 驱动，零拷贝 dma-buf import）
 // ============================================================================
 
 class MppEncoder : public QObject {
@@ -29,7 +30,7 @@ public:
     explicit MppEncoder(QObject *parent = nullptr);
     ~MppEncoder() override;
 
-    bool init(uint32_t width, uint32_t height, uint32_t stride);
+    bool init(uint32_t width, uint32_t height, uint32_t stride, BufferPool &pool);
     void start(SPSCQueue<FrameRefPtr> &encodeQueue, BufferPool &pool);
     void stop();
     void setNalCallback(NalCallback cb) { nalCallback_ = std::move(cb); }
@@ -45,8 +46,8 @@ private:
 
     MppCtx              mppCtx_     = nullptr;
     MppApiPtr           mppApi_     = nullptr;
-    MppBufferGroup      bufGrp_     = nullptr;
-    MppBuffer           frmBuf_     = nullptr;
+
+    std::vector<MppBuffer> importedBufs_;   // v4l2Index → MppBuffer 零拷贝映射
 
     SPSCQueue<FrameRefPtr> *encodeQueue_ = nullptr;
     BufferPool           *bufferPool_  = nullptr;

@@ -19,7 +19,7 @@ MppEncoder::~MppEncoder() {
     stop();
 }
 
-bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride) {
+bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride, BufferPool &pool) {
     MPP_RET ret = mpp_create(&mppCtx_, &mppApi_);
     if (ret != MPP_OK) { spdlog::error("mpp_create: {}", (int)ret); return false; }
 
@@ -34,10 +34,9 @@ bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride) {
     spdlog::info("cfg_init ret={}", (int)ret);
     if (ret) { spdlog::error("cfg_init: {}", (int)ret); return false; }
 
-    // 和 test_mpp_real.c 完全相同的配置
     mpp_enc_cfg_set_s32(cfg, "prep:width",       (int32_t)width);
     mpp_enc_cfg_set_s32(cfg, "prep:height",      (int32_t)height);
-    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride",  (int32_t)width);
+    mpp_enc_cfg_set_s32(cfg, "prep:hor_stride",  (int32_t)stride);
     mpp_enc_cfg_set_s32(cfg, "prep:ver_stride",  (int32_t)height);
     mpp_enc_cfg_set_s32(cfg, "prep:format",      MPP_FMT_YUV420SP);
     mpp_enc_cfg_set_s32(cfg, "rc:mode",          MPP_ENC_RC_MODE_CBR);
@@ -55,22 +54,36 @@ bool MppEncoder::init(uint32_t width, uint32_t height, uint32_t stride) {
         spdlog::error("SET_CFG failed, encode may use defaults");
     }
 
-    // 预分配编码 buffer
-    int frameSize = (int32_t)(width * height * 3 / 2);  // 紧凑排列
-    ret = mpp_buffer_group_get_internal(&bufGrp_, MPP_BUFFER_TYPE_DRM);
-    if (ret) {
-        spdlog::error("buffer_group_get_internal failed: {}", (int)ret);
-        return false;
-    }
+    int frameSize = (int32_t)(width * height * 3 / 2);
+    int nbuf = pool.numBuffers();
+    importedBufs_.resize(nbuf, nullptr);
 
-    ret = mpp_buffer_get(bufGrp_, &frmBuf_, frameSize);
-    if (ret) {
-        spdlog::error("mpp_buffer_get failed: {}", (int)ret);
-        return false;
+    for (int i = 0; i < nbuf; i++) {
+        int fd = pool.dmabufFd(i);
+        if (fd < 0) {
+            spdlog::error("BufferPool dmabufFd[{}] invalid", i);
+            return false;
+        }
+
+        MppBuffer mbuf = nullptr;
+        MppBufferInfo info;
+        memset(&info, 0, sizeof(info));
+        info.type  = MPP_BUFFER_TYPE_EXT_DMA;
+        info.fd    = fd;
+        info.size  = (size_t)frameSize;
+        info.index = i;
+
+        ret = mpp_buffer_import(&mbuf, &info);
+        if (ret != MPP_OK) {
+            spdlog::error("mpp_buffer_import[{}] failed: {}", i, (int)ret);
+            return false;
+        }
+        importedBufs_[i] = mbuf;
     }
 
     mppReady_ = true;
-    spdlog::info("MPP encoder ready: {}x{} @30fps 4Mbps", width, height);
+    spdlog::info("MPP encoder ready: {}x{} @30fps 4Mbps, {} dma-bufs imported (zero-copy)",
+                 width, height, nbuf);
     return true;
 }
 
@@ -78,7 +91,7 @@ void MppEncoder::start(SPSCQueue<FrameRefPtr> &encodeQueue, BufferPool &pool) {
     encodeQueue_ = &encodeQueue;
     bufferPool_  = &pool;
     running_ = true;
-    timer_.start(33);  // ~30fps
+    timer_.start(33);
     spdlog::info("MPP encoder timer started");
 }
 
@@ -86,8 +99,11 @@ void MppEncoder::stop() {
     running_ = false;
     timer_.stop();
 
-    if (frmBuf_) { mpp_buffer_put(frmBuf_); frmBuf_ = nullptr; }
-    if (bufGrp_) { mpp_buffer_group_put(bufGrp_); bufGrp_ = nullptr; }
+    for (auto &buf : importedBufs_) {
+        if (buf) { mpp_buffer_put(buf); buf = nullptr; }
+    }
+    importedBufs_.clear();
+
     if (mppCtx_) {
         mppApi_->reset(mppCtx_);
         mpp_destroy(mppCtx_);
@@ -100,14 +116,11 @@ void MppEncoder::stop() {
 void MppEncoder::tick() {
     if (!running_ || !mppReady_) return;
 
-    // 尽量多处理几帧
     for (int i = 0; i < 4; i++) {
         auto ref = encodeQueue_->tryPop();
         if (!ref) break;
 
         bool ok = encodeOneFrame(ref);
-        // ref 出作用域自动析构 — shared_ptr deleter 自动 QBUF
-
         if (ok) {
             emit heartbeat();
         }
@@ -115,14 +128,13 @@ void MppEncoder::tick() {
 }
 
 bool MppEncoder::encodeOneFrame(FrameRefPtr ref) {
-    if (!ref || !ref->mmapAddr) return false;
+    if (!ref || ref->v4l2Index >= importedBufs_.size()) return false;
+
+    uint32_t idx = ref->v4l2Index;
+    MppBuffer mbuf = importedBufs_[idx];
+    if (!mbuf) return false;
 
     int w = (int)ref->width, h = (int)ref->height;
-    int frameSize = w * h * 3 / 2;  // 紧密排列，无 padding
-
-    void *dst = mpp_buffer_get_ptr(frmBuf_);
-    if (!dst) return false;
-    memcpy(dst, ref->mmapAddr, frameSize);
 
     MppFrame frame = nullptr;
     mpp_frame_init(&frame);
@@ -131,15 +143,13 @@ bool MppEncoder::encodeOneFrame(FrameRefPtr ref) {
     mpp_frame_set_hor_stride(frame, w);
     mpp_frame_set_ver_stride(frame, h);
     mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
-    mpp_frame_set_buffer(frame, frmBuf_);
+    mpp_frame_set_buffer(frame, mbuf);
     mpp_frame_set_eos(frame, 0);
 
-    // 送入编码
     MPP_RET ret = mppApi_->encode_put_frame(mppCtx_, frame);
     mpp_frame_deinit(&frame);
     if (ret != MPP_OK) return false;
 
-    // 获取编码输出
     MppPacket packet = nullptr;
     ret = mppApi_->encode_get_packet(mppCtx_, &packet);
 

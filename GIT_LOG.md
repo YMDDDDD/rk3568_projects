@@ -259,3 +259,39 @@ git add rk3568-camera/
 git commit -m "refactor: BufferPool shared_ptr自定义deleter自动归还(buffer)"
 git push
 ```
+
+---
+
+## 2026-05-16 第十三次推送
+
+### 推送内容
+
+**标题：** `perf: 编码+显示双路径 dma-buf 零拷贝，省去每帧 ~6MB CPU memcpy`
+
+### 变更文件
+- `app/buffer_pool.h` + `.cpp`：新增 `dmabufFd(index)` 公开 EXPBUF fd；PTS 移入 `acquire()` 内部
+- `app/mpp_encoder.h` + `.cpp`：`init()` 预导入 8 个 V4L2 dma-buf → MppBuffer 映射表；`encodeOneFrame()` 删除 3MB memcpy，改用 `mpp_frame_set_buffer(importedMppBuf)` 走 MPP_EXT_DMA
+- `app/video_widget.h` + `.cpp`：新增 `renderDmaBuf()`，用 `eglCreateImageKHR(LINUX_DMA_BUF)` + `glEGLImageTargetTexture2DOES` 直接导入 dmabuf 为 GL 纹理，替代 `glTexImage2D` 的 CPU→GPU 拷贝
+- `app/main.cpp`：编码调用传 `capture.pool()`，显示调用改为 `renderDmaBuf(ref->dmabufFd, ...)`
+- `app/capture.cpp`：删除手动 PTS 赋值（已移入 BufferPool）
+- `WORKLOG.md`：追加 5/16 编译部署、MPP 零拷贝、显示零拷贝记录
+
+### 为什么改
+- 编码路径原先每帧 `memcpy(dst, mmapAddr, 3MB)`，`FrameRef::dmabufFd` 形同虚设
+- 显示路径原先每帧 `glTexImage2D(mmapAddr)` 做 CPU→GPU 3MB 拷贝
+- 两条路径合计浪费每帧 ~6MB CPU 带宽，改为 dma-buf 直通后 ISP→VPU/GPU 全程硬件 DMA
+
+### 数据流
+```
+改前: V4L2 mmap → 编码: memcpy 3MB → MPP buf → VPU
+                 显示: glTexImage2D 3MB → GL纹理 → GPU
+改后: V4L2 dma-buf ─→ 编码: mpp_buffer_import → VPU (零拷贝)
+                  └→ 显示: EGL dmabuf import → GPU (零拷贝)
+```
+
+### 使用的 git 命令
+```bash
+git add rk3568-camera/
+git commit -m "perf: 编码+显示双路径 dma-buf 零拷贝"
+git push
+```

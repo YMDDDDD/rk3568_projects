@@ -544,3 +544,89 @@ video0 和 video1 在同一进程中同时采集，互不冲突。
 **优势：** shared_ptr 自动管理引用计数，最后一个消费者析构时自动归还 V4L2 buffer，无需手动协调多个消费者。
 
 **验证：** 运行无 QBUF 错误，采集+编码 30fps 稳定。
+
+## 2026-05-16
+
+### 16:16 — 编译与部署验证
+
+**交叉编译：**
+- 执行 `scripts/build.sh release`，交叉编译 aarch64，产物 678K
+- 推送到开发板 `/usr/bin/rk3568-camera` 和 `/tmp/rk3568-camera`
+
+**运行验证：**
+- Wayland 环境变量：`XDG_RUNTIME_DIR=/var/run WAYLAND_DISPLAY=wayland-0 QT_QPA_PLATFORM=wayland`
+- 所有模块正常启动并稳定运行（超时 15s 被 adb shell 终止，非程序异常）
+
+**运行状态确认（5月16日最新版本）：**
+
+| 模块 | 状态 | 详情 |
+|------|------|------|
+| V4L2 采集 | ✅ | /dev/video0 1920×1080@30fps, stride=1920 |
+| BufferPool | ✅ | 8 buffers, 3.13MB/帧, mmap 正常 |
+| MPP H.264 编码 | ✅ | 30fps 4Mbps, I帧~97KB / P帧~4-16KB |
+| RTSP 推流 | ✅ | 端口 8554, feedNALU 持续推送 |
+| OpenGL 渲染 | ✅ | Mali-G52, OpenGL ES 3.2, ~290 renders/10s |
+| PerfMonitor | ✅ | 每秒统计正常 |
+| 分段录像 | ⚠️ | 代码已就绪，本次未触发（10s 内未达到 5min 分片条件） |
+| Detector (video1) | ✅ | /dev/video1 640×640 bpl=1920 就绪 |
+| YOLO 推理 | ❌ | RKNN 模型文件缺失 (`model/yolov5s.rknn`) |
+
+**RTSP 流地址：** `rtsp://192.168.5.17:8554/live`（WiFi IP）或 `rtsp://172.16.110.2:8554/live`（USB 网络）
+
+**后台启动命令：** `nohup /usr/bin/rk3568-camera > /dev/null 2>&1 &`
+
+**待解决：**
+- 准备 YOLOv5s RKNN 模型文件
+- Weston 启动方式需确认（重启后自动启动，但 adb shell 中启动 weston 后 Shell 超时会误杀 weston 进程）
+
+### 19:03 — MPP 编码零拷贝改进
+
+**问题：** `MppEncoder::encodeOneFrame()` 中 `memcpy(dst, ref->mmapAddr, 3MB)` 每帧做 CPU 拷贝，`FrameRef::dmabufFd`（V4L2 EXPBUF 导出）完全未使用。
+
+**修复：** 实现 dma-buf 零拷贝编码
+
+| 改动点 | 内容 |
+|--------|------|
+| `buffer_pool.h` | 新增 `dmabufFd(index)` 公开访问 EXPBUF fd |
+| `mpp_encoder.h` | 移除 `bufGrp_`/`frmBuf_`，新增 `importedBufs_` 映射表；`init` 签名新增 `BufferPool&` |
+| `mpp_encoder.cpp::init()` | 遍历 8 个 V4L2 buffer，`mpp_buffer_import(MPP_BUFFER_TYPE_EXT_DMA)` 预导入所有 dma-buf fd |
+| `mpp_encoder.cpp::encodeOneFrame()` | **删除 memcpy**，通过 `ref->v4l2Index` 查表直接用预导入的 `MppBuffer` |
+| `mpp_encoder.cpp::stop()` | `mpp_buffer_put` 释放所有导入的 MppBuffer |
+| `main.cpp` | `encoder.init(..., capture.pool())` 传入 BufferPool |
+
+**数据流变化：**
+
+```
+改前: V4L2 mmap → memcpy 3MB → MPP 内部分配 buffer → VPU 编码
+改后: V4L2 dma-buf ──→── MPP import ──→ VPU 编码 (零拷贝)
+```
+
+**验证：** 编译 673K，运行 30fps 采集/编码/RTSP/渲染全链路正常，日志确认 `8 dma-bufs imported (zero-copy)`。
+
+### 21:12 — 显示路径零拷贝改进
+
+**问题：** `renderRawNV12()` 用 `glTexImage2D` 每帧做 CPU→GPU 纹理上传拷贝（~3MB/帧），`importDmaBuf` 是空函数。
+
+**修复：** 实现 EGL dmabuf 零拷贝显示
+
+| 改动点 | 内容 |
+|--------|------|
+| `video_widget.h` | 新增 `renderDmaBuf(fd,w,h,stride)` |
+| `video_widget.cpp` | `eglCreateImageKHR` + `EGL_LINUX_DMA_BUF_EXT` 导入 dmabuf；Y 平面用 `DRM_FORMAT_R8`、UV 用 `DRM_FORMAT_GR88`；`glEGLImageTargetTexture2DOES` 绑定为 GL 纹理 |
+| `main.cpp` | 调用改为 `renderDmaBuf(ref->dmabufFd, ...)`，校验改为 `dmabufFd < 0` |
+
+**数据流变化：**
+```
+改前: V4L2 mmapAddr → glTexImage2D (CPU→GPU 拷贝) → GL纹理
+改后: V4L2 dmabufFd → EGL DMA_BUF import → GL纹理 (零拷贝)
+```
+
+**验证：** 编译 678K，运行 30fps 采集/编码/渲染全链路正常，296 renders/10s，无 EGL 错误。
+
+**全链路零拷贝状态：**
+
+| 路径 | 状态 | 技术 |
+|------|------|------|
+| 采集→编码 | ✅ 零拷贝 | `mpp_buffer_import(EXT_DMA)` |
+| 采集→显示 | ✅ 零拷贝 | `eglCreateImageKHR(DMA_BUF) + glEGLImageTargetTexture2DOES` |
+| 采集→检测 | — | 640×640 mmap 小数据量，量化后 NPU 直接处理 |
